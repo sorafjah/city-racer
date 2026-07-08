@@ -177,6 +177,7 @@ world.addContactMaterial(new CANNON.ContactMaterial(groundMat, appleMat, { frict
 // 地面
 const groundBody = new CANNON.Body({ mass: 0, shape: new CANNON.Plane(), material: groundMat });
 groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+groundBody.aabbNeedsUpdate = true; // cannon-es対策: 構築直後(回転前)にAABBがキャッシュされるため、回転後に無効化して再計算させる
 world.addBody(groundBody);
 
 /* ============================================================
@@ -346,6 +347,7 @@ function addStaticBox(sx, sy, sz, x, y, z, rx = 0, ry = 0, rz = 0, material = ma
     shape: new CANNON.Box(new CANNON.Vec3(sx / 2, sy / 2, sz / 2)) });
   b.position.set(x, y, z);
   b.quaternion.setFromEuler(rx, ry, rz);
+  b.aabbNeedsUpdate = true; // cannon-es対策: 回転後にAABBキャッシュを無効化して再計算させる
   world.addBody(b);
   return m;
 }
