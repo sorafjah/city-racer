@@ -1061,11 +1061,11 @@ renderer.setAnimationLoop(() => {
   if (racing) {
     if (input.throttle) {
       const taper = Math.max(0, 1 - Math.max(fwdSpeed, 0) / 33);
-      engine = MAX_FORCE * taper * (boostTime > 0 ? 1.7 : 1);
+      engine = -MAX_FORCE * taper * (boostTime > 0 ? 1.7 : 1);
     }
     if (input.brake) {
       if (fwdSpeed > 1.2) brake = BRAKE_FORCE;
-      else engine = -MAX_FORCE * 0.45; // バック
+      else engine = MAX_FORCE * 0.45; // バック
     }
   } else {
     brake = state === 'finish' ? 14 : BRAKE_FORCE;
