@@ -927,6 +927,10 @@ function startCountdown() {
   el('lapText').textContent = 'LAP 1/3';
   el('lastLapText').textContent = 'ラップ --:--.---';
   el('bestLapText').textContent = 'ベスト ' + fmt(storedBest ? storedBest : null);
+  // 視点をデフォルト(斜め後ろ追従)にリセット
+  viewMode = 'chase';
+  cabin.visible = true;
+  chick.visible = true;
   const cd = el('countdown'), num = el('countNum');
   cd.style.display = 'flex';
   let n = 3;
@@ -1063,11 +1067,11 @@ renderer.setAnimationLoop(() => {
   if (racing) {
     if (input.throttle) {
       const taper = Math.max(0, 1 - Math.max(fwdSpeed, 0) / 33);
-      engine = -MAX_FORCE * taper * (boostTime > 0 ? 1.7 : 1);
+      engine = MAX_FORCE * taper * (boostTime > 0 ? 1.7 : 1);
     }
     if (input.brake) {
       if (fwdSpeed > 1.2) brake = BRAKE_FORCE;
-      else engine = MAX_FORCE * 0.45; // バック
+      else engine = -MAX_FORCE * 0.45; // バック
     }
   } else {
     brake = state === 'finish' ? 14 : BRAKE_FORCE;
