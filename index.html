@@ -39,9 +39,9 @@
   #ctrlR-sub { display:flex; flex-direction:column; gap:12px; align-items:center; }
   .drvBtn { border:none; border-radius:50%; color:#fff; font-family:inherit; font-weight:700;
     box-shadow:0 4px 10px rgba(0,0,0,.35); }
-  #btnAccel { width:122px; height:122px; background:#2f9e57; font-size:20px; }
-  #btnBrake { width:78px; height:78px; background:#c94141; font-size:15px; }
-  #btnBack { width:64px; height:64px; background:#6a6f78; font-size:13px; }
+  #btnAccel { width:92px; height:92px; background:#2f9e57; font-size:16px; }
+  #btnBrake { width:92px; height:92px; background:#c94141; font-size:16px; }
+  #btnBack { width:92px; height:92px; background:#6a6f78; font-size:16px; }
   #btnLeft,#btnRight { width:104px; height:104px; background:#3a6ea8; font-size:40px; }
   .drvBtn.on { filter:brightness(1.4); transform:scale(.96); }
 
@@ -82,7 +82,7 @@
 </div>
 <div id="speed" class="panel">0 km/h</div>
 <div id="boostMsg">ブースト！</div>
-<div id="wrongMsg">コースにもどろう！（⟲でリセット）</div>
+<div id="wrongMsg">画面を上にスワイプ！ゴロンと元にもどるよ</div>
 
 <div id="topBtns" style="display:none;">
   <button class="sqBtn" id="btnView"><span>&#128247;</span>視点</button>
@@ -96,8 +96,8 @@
 </div>
 <div id="ctrlR">
   <div id="ctrlR-sub">
-    <button class="drvBtn" id="btnBack">バック</button>
     <button class="drvBtn" id="btnBrake">ブレーキ</button>
+    <button class="drvBtn" id="btnBack">バック</button>
   </div>
   <button class="drvBtn" id="btnAccel">アクセル</button>
 </div>
@@ -252,11 +252,11 @@ function addWall(sx, sz, x, z, color) {
   wallBodies.push(b);
 }
 // 外周の壁
-addWall(1, 143, 70.5, 0);  addWall(1, 143, -70.5, 0);
-addWall(143, 1, 0, 70.5);  addWall(143, 1, 0, -70.5);
+addWall(2, 144, 71, 0);  addWall(2, 144, -71, 0);
+addWall(144, 2, 0, 71);  addWall(144, 2, 0, -71);
 // 内側ブロックの壁
-addWall(1, 100, 49.5, 0);  addWall(1, 100, -49.5, 0);
-addWall(100, 1, 0, 49.5);  addWall(100, 1, 0, -49.5);
+addWall(2, 101, 50, 0);  addWall(2, 101, -50, 0);
+addWall(101, 2, 0, 50);  addWall(101, 2, 0, -50);
 // （シケインの壁は撤去。下の段ボールの山に置き換え）
 
 /* ---- 建物 ---- */
@@ -924,6 +924,30 @@ function respawn() {
   chassisBody.velocity.setZero();
   chassisBody.angularVelocity.setZero();
 }
+function carUpY() {
+  const q = chassisBody.quaternion;
+  return 1 - 2 * (q.x * q.x + q.z * q.z);
+}
+function tryFlipCar() {
+  if (state !== 'race') return false;
+  if (carUpY() > 0.5) return false; // すでに正立している
+  // 向いていた方向（ヨー角）だけ残して起こす
+  const q = chassisBody.quaternion;
+  const yaw = Math.atan2(
+    2 * (q.w * q.y + q.x * q.z),
+    1 - 2 * (q.y * q.y + q.z * q.z)
+  );
+  chassisBody.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), yaw);
+  chassisBody.position.y += 1.1;
+  chassisBody.velocity.set(0, 0, 0);
+  chassisBody.angularVelocity.set(0, 0, 0);
+  chassisBody.wakeUp();
+  shake = Math.min(shake + 0.35, 0.6);
+  sndThud(6);
+  wrongCool = 0;
+  el('wrongMsg').style.display = 'none';
+  return true;
+}
 function resetProps() {
   for (const p of props) {
     p.body.position.copy(p.body.initPos);
@@ -1008,6 +1032,24 @@ el('btnRetry').addEventListener('pointerdown', (e) => {
   startCountdown();
 });
 el('btnReset').addEventListener('pointerdown', (e) => { e.preventDefault(); respawn(); });
+
+/* ---- 上スワイプでひっくり返しを直す ---- */
+{
+  let swipeY = null, swipeT = 0;
+  const canvasEl = renderer.domElement;
+  canvasEl.addEventListener('pointerdown', (e) => {
+    swipeY = e.clientY;
+    swipeT = performance.now();
+  });
+  canvasEl.addEventListener('pointerup', (e) => {
+    if (swipeY == null) return;
+    const dy = e.clientY - swipeY;
+    const dtms = performance.now() - swipeT;
+    swipeY = null;
+    if (dy < -60 && dtms < 800) tryFlipCar();
+  });
+  canvasEl.addEventListener('pointercancel', () => { swipeY = null; });
+}
 
 /* ---- 視点切りかえ ---- */
 let viewMode = 'chase'; // chase | cockpit
@@ -1234,10 +1276,9 @@ renderer.setAnimationLoop(() => {
     }
     // 落下・場外の保険
     if (chassisBody.position.y < -4 || Math.abs(chassisBody.position.x) > 110 || Math.abs(chassisBody.position.z) > 110) respawn();
-    // 横転したまま動けない
-    const upY = 1 - 2 * (chassisBody.quaternion.x * chassisBody.quaternion.x + chassisBody.quaternion.z * chassisBody.quaternion.z);
-    if (upY < 0.2 && speed < 1) { wrongCool += dt; } else wrongCool = 0;
-    el('wrongMsg').style.display = wrongCool > 1.5 ? 'block' : 'none';
+    // 横転したまま動けない → 上スワイプの案内を出す
+    if (carUpY() < 0.25 && speed < 1) { wrongCool += dt; } else wrongCool = 0;
+    el('wrongMsg').style.display = wrongCool > 1.0 ? 'block' : 'none';
   }
 
   /* ---- HUD ---- */
