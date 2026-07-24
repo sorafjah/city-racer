@@ -23,6 +23,10 @@
     font-size:24px; font-weight:700; pointer-events:none; display:none; font-variant-numeric:tabular-nums; }
   #boostMsg { position:fixed; top:22%; left:50%; transform:translateX(-50%); z-index:6; color:#ffd24a;
     font-size:34px; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,.6); display:none; pointer-events:none; }
+  #comboMsg { position:fixed; top:13%; left:50%; transform:translateX(-50%); z-index:6; color:#ff8a3c;
+    font-size:30px; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,.6); display:none; pointer-events:none; }
+  #introSkip { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); z-index:6; color:#fff;
+    font-size:14px; opacity:.8; display:none; pointer-events:none; }
   #wrongMsg { position:fixed; top:32%; left:50%; transform:translateX(-50%); z-index:6; color:#fff;
     font-size:20px; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,.6); display:none; pointer-events:none; }
 
@@ -84,6 +88,8 @@
 </div>
 <div id="speed" class="panel">0 km/h</div>
 <div id="boostMsg">ブースト！</div>
+<div id="comboMsg">3 コンボ！</div>
+<div id="introSkip">タップでスキップ</div>
 <div id="wrongMsg">画面を上にスワイプ！ゴロンと元にもどるよ</div>
 
 <div id="topBtns" style="display:none;">
@@ -105,7 +111,8 @@
   <h1>シティレーサー</h1>
   <p>街の中をぐるっと 3周してゴールをめざそう！<br>
   かいだん・ジャンプ台・水たまり・でこぼこ道…<br>
-  段ボールやリンゴにぶつかると ちらばるよ！</p>
+  電柱をなぎたおせ！自販機をふっとばせ！<br>
+  こわしてはねて、はでに走ろう！</p>
   <button class="bigBtn" id="btnStart">スタート</button>
   <p class="note">左：スティックでハンドル　　右：アクセル / バック（ブレーキ）<br>
   右上のボタンで 視点切りかえ・音・リセット　（横向きがおすすめ）</p>
@@ -272,7 +279,57 @@ function addBuilding(x, z, w, h, d) {
     shape: new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, d / 2)) });
   b.position.set(x, h / 2, z);
   b.isWallLike = true;
+  b.isBuilding = true;
+  b.buildingMesh = m;
   world.addBody(b);
+}
+/* ---- ビル衝突演出：ヒビあと（デカール）と揺れ ---- */
+function crackTexture() {
+  const cv = document.createElement('canvas');
+  cv.width = 96; cv.height = 96;
+  const g = cv.getContext('2d');
+  g.strokeStyle = 'rgba(30,26,22,0.85)';
+  g.lineWidth = 2.2;
+  for (let i = 0; i < 6; i++) {
+    let px = 48, py = 48;
+    const ang0 = (i / 6) * Math.PI * 2 + Math.random();
+    g.beginPath();
+    g.moveTo(px, py);
+    for (let s = 0; s < 4; s++) {
+      const ang = ang0 + (Math.random() - 0.5) * 1.1;
+      px += Math.cos(ang) * (7 + Math.random() * 10);
+      py += Math.sin(ang) * (7 + Math.random() * 10);
+      g.lineTo(px, py);
+    }
+    g.stroke();
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const crackMats = [crackTexture(), crackTexture()].map(t =>
+  new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2 }));
+const crackGeo = new THREE.PlaneGeometry(1.7, 1.7);
+const crackDecals = [];
+let crackIdx = 0;
+for (let i = 0; i < 14; i++) {
+  const m = new THREE.Mesh(crackGeo, crackMats[i % 2]);
+  m.visible = false;
+  scene.add(m);
+  crackDecals.push(m);
+}
+function addCrack(pos, normal) {
+  const m = crackDecals[crackIdx++ % crackDecals.length];
+  m.visible = true;
+  m.position.set(pos.x + normal.x * 0.08, Math.max(pos.y, 0.6), pos.z + normal.z * 0.08);
+  m.lookAt(m.position.x + normal.x, m.position.y + normal.y, m.position.z + normal.z);
+  m.rotateZ(Math.random() * Math.PI);
+}
+const shakingBuildings = [];
+function shakeBuilding(mesh) {
+  for (const s of shakingBuildings) if (s.mesh === mesh) { s.t = 0.45; return; }
+  shakingBuildings.push({ mesh, t: 0.45 });
 }
 // 内側ブロック
 for (let x = -40; x <= 40; x += 16) {
@@ -300,21 +357,70 @@ for (let i = 0; i < 8; i++) {
   l.position.set(x, 3.6, z); scene.add(l);
 }
 
-/* ---- 街灯（物理あり：ぶつかると火花） ---- */
-const lampPositions = [];
+/* ---- 電柱（ぶつかると根元からへし折れる！煙が出て明かりが消える） ---- */
+const lamps = [];
 const matPole = new THREE.MeshLambertMaterial({ color: 0x5c6670 });
-const matLampHead = new THREE.MeshBasicMaterial({ color: 0xffe9a0 });
+const lampPoleGeo = new THREE.CylinderGeometry(0.09, 0.11, 4, 6);
+const lampHeadGeo = new THREE.SphereGeometry(0.25, 8, 6);
 function addLamp(x, z) {
-  const p = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 4, 6), matPole);
-  p.position.set(x, 2, z); scene.add(p);
-  const h = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 6), matLampHead);
-  h.position.set(x, 4.1, z); scene.add(h);
+  const g = new THREE.Group();
+  g.position.set(x, 2, z); // グループ原点＝柱の中心
+  const pole = new THREE.Mesh(lampPoleGeo, matPole);
+  g.add(pole);
+  const headMat = new THREE.MeshBasicMaterial({ color: 0xffe9a0 });
+  const head = new THREE.Mesh(lampHeadGeo, headMat);
+  head.position.y = 2.1;
+  g.add(head);
+  scene.add(g);
   const b = new CANNON.Body({ mass: 0,
     shape: new CANNON.Cylinder(0.1, 0.12, 4, 6) });
   b.position.set(x, 2, z);
   b.isWallLike = true;
+  b.isLamp = true;
   world.addBody(b);
-  lampPositions.push(new THREE.Vector3(x, 0, z));
+  const lamp = { g, headMat, body: b, x, z, broken: false, dynBody: null, flickerT: 0 };
+  b.lampRef = lamp;
+  lamps.push(lamp);
+}
+function breakLamp(lamp, dirX, dirZ, v) {
+  if (lamp.broken) return;
+  lamp.broken = true;
+  world.removeBody(lamp.body);
+  // 動く柱として再生成（車に押された方向へ倒れる）
+  const dyn = new CANNON.Body({ mass: 16,
+    shape: new CANNON.Cylinder(0.1, 0.12, 4, 6) });
+  dyn.position.set(lamp.x, 2.1, lamp.z);
+  const push = Math.min(2 + v * 0.4, 7);
+  dyn.velocity.set(dirX * push, 2.2, dirZ * push);
+  dyn.angularVelocity.set(dirZ * 3.2, (Math.random() - 0.5) * 2, -dirX * 3.2);
+  dyn.allowSleep = true;
+  dyn.sleepSpeedLimit = 0.4;
+  dyn.sleepTimeLimit = 0.8;
+  world.addBody(dyn);
+  lamp.dynBody = dyn;
+  lamp.flickerT = 1.3; // 明かりがチカチカ→消灯
+  // 折れた根元から煙
+  for (let i = 0; i < 12; i++) {
+    tmpV.set(lamp.x + (Math.random() - 0.5) * 0.4, 0.3, lamp.z + (Math.random() - 0.5) * 0.4);
+    smokePool.spawn(tmpV,
+      new THREE.Vector3((Math.random() - 0.5) * 1.5, 1.2 + Math.random() * 1.6, (Math.random() - 0.5) * 1.5),
+      1.1 + Math.random() * 0.5, 0.7, -0.6, 1.5, 0.65);
+  }
+  sndThud(Math.min(v, 9));
+  if (AC && soundOn) noiseBurst(AC.currentTime, 0.2, 0.18, 'lowpass', 700);
+  addCombo();
+  if (v > 9) triggerSlowMo();
+}
+function resetLamps() {
+  for (const lamp of lamps) {
+    if (lamp.dynBody) { world.removeBody(lamp.dynBody); lamp.dynBody = null; }
+    if (lamp.broken) world.addBody(lamp.body);
+    lamp.broken = false;
+    lamp.flickerT = 0;
+    lamp.g.position.set(lamp.x, 2, lamp.z);
+    lamp.g.quaternion.identity();
+    lamp.headMat.color.setHex(0xffe9a0);
+  }
 }
 for (let c = -48; c <= 48; c += 24) {
   if (Math.abs(c) === 48) continue; // コーナー付近の街灯は撤去
@@ -338,7 +444,7 @@ function addStaticBox(sx, sy, sz, x, y, z, rx = 0, ry = 0, rz = 0, material = ma
   world.addBody(b);
   return m;
 }
-// 階段（北の道、進行方向 -x。半分の車線だけ。左車線は平ら）
+// 階段（北の道、進行方向 -x。道幅ほぼいっぱい＝ほぼ必ずここを通る）
 // 見た目は段々のまま、当たり判定は1枚の滑らかなスロープにする（離散的な段差だとレイキャストが引っかかって登れないため）
 function addVisualStep(sx, sy, sz, x, y, z) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), matStep);
@@ -347,15 +453,15 @@ function addVisualStep(sx, sy, sz, x, y, z) {
 }
 for (let i = 0; i < 6; i++) {
   const h = 0.18 * (i + 1);
-  addVisualStep(1.2, h, 7, 24 - i * 1.2, h / 2, -60.5);
+  addVisualStep(1.2, h, 12, 24 - i * 1.2, h / 2, -60);
 }
-addStaticBox(8, 0.3, 7, 21, 0.54, -60.5, 0, 0, -0.149); // 階段の当たり判定（見た目に沿った滑らかな坂）
-addStaticBox(6, 1.08, 7, 14.4, 0.54, -60.5);                       // おどり場
-addStaticBox(7.4, 0.2, 7, 7.6, 0.62, -60.5, 0, 0, 0.145);          // 下りスロープ
+addStaticBox(8, 0.3, 12, 21, 0.54, -60, 0, 0, -0.149); // 階段の当たり判定（見た目に沿った滑らかな坂）
+addStaticBox(6, 1.08, 12, 14.4, 0.54, -60);                        // おどり場
+addStaticBox(7.4, 0.2, 12, 7.6, 0.62, -60, 0, 0, 0.145);           // 下りスロープ
 
-// ジャンプ台（西の道、進行方向 +z）
+// ジャンプ台（西の道、進行方向 +z。道幅ほぼいっぱい）
 const matRamp = new THREE.MeshLambertMaterial({ color: 0xd8b13c });
-addStaticBox(7, 0.3, 6, -60, 0.62, -10, -0.21, 0, 0, matRamp);
+addStaticBox(12, 0.3, 6, -60, 0.62, -10, -0.21, 0, 0, matRamp);
 
 // でこぼこゾーン（南の道）
 const matBump = new THREE.MeshLambertMaterial({ color: 0x6a6d74 });
@@ -666,8 +772,10 @@ class Pool {
   }
 }
 const dustPool = new Pool(40, 0xbdb29a, false, 0.5);
-const splashPool = new Pool(40, 0xcfe8ff, false, 0.35);
+const splashPool = new Pool(60, 0xcfe8ff, false, 0.35);
 const sparkPool = new Pool(40, 0xffd24a, true, 0.22);
+const smokePool = new Pool(30, 0x8a8f96, false, 0.6);
+const debrisPool = new Pool(36, 0x9c9186, false, 0.32);
 const tmpV = new THREE.Vector3();
 
 /* ============================================================
@@ -772,17 +880,12 @@ function sndBoost() {
   o.connect(g); g.connect(master);
   o.start(t); o.stop(t + 0.4);
 }
-function sndWah() {
+function sndCrash() {
   if (!AC || !soundOn) return;
   const t = AC.currentTime;
-  note(660, t, 0.09, 'square', 0.08);
-  note(520, t + 0.08, 0.12, 'square', 0.08);
-}
-function sndBark() {
-  if (!AC || !soundOn) return;
-  const t = AC.currentTime;
-  note(340, t, 0.07, 'square', 0.09);
-  note(340, t + 0.12, 0.07, 'square', 0.09);
+  noiseBurst(t, 0.25, 0.22, 'bandpass', 1800);
+  note(180, t, 0.15, 'square', 0.14);
+  note(120, t + 0.05, 0.2, 'triangle', 0.16);
 }
 // BGMシーケンサー
 const MEL = [659, 784, 880, 784, 659, 587, 523, 587, 659, 784, 880, 988, 1047, 988, 880, 784];
@@ -815,66 +918,102 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ============================================================
-   NPC：歩行者・イヌ・鳥（物理なし、車がくると逃げる）
+   街の小物：自販機（こわすとジュースが散乱）・消火栓（倒すと水が噴き出す）・鳥
 ============================================================ */
-const walkLanes = [
-  { axis: 'z', fx: 51.5, min: -46, max: 46 }, { axis: 'z', fx: -51.5, min: -46, max: 46 },
-  { axis: 'x', fz: 51.5, min: -46, max: 46 }, { axis: 'x', fz: -51.5, min: -46, max: 46 },
-  { axis: 'z', fx: 68.5, min: -64, max: 64 }, { axis: 'z', fx: -68.5, min: -64, max: 64 },
-  { axis: 'x', fz: 68.5, min: -64, max: 64 }, { axis: 'x', fz: -68.5, min: -64, max: 64 },
-];
-const pedColors = [0xd86a6a, 0x6a8ed8, 0x6ab87a, 0xd8a94a, 0x9a6ad0, 0x50b8b0];
-const peds = [];
-function clampToTown(p) {
-  p.x = Math.max(-69, Math.min(69, p.x));
-  p.z = Math.max(-69, Math.min(69, p.z));
-  if (Math.abs(p.x) < 50.6 && Math.abs(p.z) < 50.6) {
-    if (Math.abs(p.x) > Math.abs(p.z)) p.x = Math.sign(p.x || 1) * 50.6;
-    else p.z = Math.sign(p.z || 1) * 50.6;
+// 自販機
+const vendColors = [0xd8342c, 0x2f6fc0, 0xe8e8e8, 0x2f9e57];
+function addVending(x, z, rotY) {
+  const g = new THREE.Group();
+  const color = vendColors[(Math.random() * vendColors.length) | 0];
+  const main = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.85, 0.8),
+    new THREE.MeshLambertMaterial({ color }));
+  g.add(main);
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(0.68, 1.0, 0.06),
+    new THREE.MeshLambertMaterial({ color: 0xf2f2f0 }));
+  panel.position.set(-0.08, 0.28, -0.41);
+  g.add(panel);
+  const slot = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 0.05),
+    new THREE.MeshLambertMaterial({ color: 0x30343a }));
+  slot.position.set(0, -0.62, -0.41);
+  g.add(slot);
+  const body = new CANNON.Body({ mass: 45,
+    shape: new CANNON.Box(new CANNON.Vec3(0.475, 0.925, 0.4)) });
+  body.position.set(x, 0.96, z);
+  body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), rotY);
+  body.aabbNeedsUpdate = true;
+  body.isVending = true;
+  body.spillCount = 0;
+  body.lastSpill = 0;
+  addProp(g, body);
+}
+addVending(51.7, -40, -Math.PI / 2); addVending(51.7, 40, -Math.PI / 2);
+addVending(-51.7, -40, Math.PI / 2); addVending(-51.7, 40, Math.PI / 2);
+addVending(-12, 51.7, Math.PI);      addVending(12, -51.7, 0);
+addVending(68.4, 12, Math.PI / 2);   addVending(-68.4, -12, -Math.PI / 2);
+// ジュース缶（自販機をこわすと飛び出す）
+const canMats = [0xd8342c, 0x2f8f4f, 0x8a5cc8, 0xe8a020].map(c => new THREE.MeshLambertMaterial({ color: c }));
+const canGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.24, 8);
+const cans = [];
+function spillCans(pos, dirX, dirZ) {
+  for (let i = 0; i < 7; i++) {
+    if (cans.length >= 34) {
+      const old = cans.shift();
+      world.removeBody(old.body);
+      scene.remove(old.mesh);
+    }
+    const mesh = new THREE.Mesh(canGeo, canMats[(Math.random() * canMats.length) | 0]);
+    const body = new CANNON.Body({ mass: 0.35,
+      shape: new CANNON.Cylinder(0.09, 0.09, 0.24, 8) });
+    body.position.set(pos.x + (Math.random() - 0.5) * 0.5,
+      pos.y + 0.4 + Math.random() * 0.6, pos.z + (Math.random() - 0.5) * 0.5);
+    body.velocity.set(dirX * (2 + Math.random() * 4) + (Math.random() - 0.5) * 3,
+      2.5 + Math.random() * 3.5,
+      dirZ * (2 + Math.random() * 4) + (Math.random() - 0.5) * 3);
+    body.angularVelocity.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14);
+    body.allowSleep = true;
+    body.sleepSpeedLimit = 0.4;
+    body.sleepTimeLimit = 0.5;
+    world.addBody(body);
+    scene.add(mesh);
+    cans.push({ mesh, body });
   }
 }
-for (let i = 0; i < 12; i++) {
-  const lane = walkLanes[i % walkLanes.length];
-  const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.75, 8),
-    new THREE.MeshLambertMaterial({ color: pedColors[i % pedColors.length] }));
-  body.position.y = 0.55;
-  g.add(body);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6),
-    new THREE.MeshLambertMaterial({ color: 0xf0c8a0 }));
-  head.position.y = 1.08;
-  g.add(head);
-  const t = lane.min + Math.random() * (lane.max - lane.min);
-  if (lane.axis === 'z') g.position.set(lane.fx, 0.1, t);
-  else g.position.set(t, 0.1, lane.fz);
-  scene.add(g);
-  peds.push({ g, lane, dir: Math.random() < 0.5 ? 1 : -1, scared: 0, ph: Math.random() * 6 });
+function clearCans() {
+  for (const c of cans) { world.removeBody(c.body); scene.remove(c.mesh); }
+  cans.length = 0;
 }
-// イヌ
-const dogs = [];
-for (let i = 0; i < 3; i++) {
+// 消火栓
+const hydrantSprays = [];
+function addHydrant(x, z) {
   const g = new THREE.Group();
-  const matDog = new THREE.MeshLambertMaterial({ color: [0x9a734a, 0xd8d0c0, 0x574033][i] });
-  const b = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.28, 0.62), matDog);
-  b.position.y = 0.3;
-  g.add(b);
-  const h = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.26), matDog);
-  h.position.set(0, 0.48, -0.36);
-  g.add(h);
-  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.28), matDog);
-  tail.position.set(0, 0.42, 0.4);
-  tail.rotation.x = -0.6;
-  g.add(tail);
-  const side = [[60, 30], [-20, 60], [-60, -40]][i];
-  g.position.set(side[0], 0, side[1]);
-  scene.add(g);
-  dogs.push({ g, target: new THREE.Vector3(side[0], 0, side[1]), wait: 0, scared: 0 });
+  const matHyd = new THREE.MeshLambertMaterial({ color: 0xd03028 });
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.6, 8), matHyd);
+  g.add(base);
+  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 6), matHyd);
+  cap.position.y = 0.34;
+  g.add(cap);
+  for (const s of [-1, 1]) {
+    const nub = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.14, 6), matHyd);
+    nub.rotation.z = Math.PI / 2;
+    nub.position.set(0.18 * s, 0.1, 0);
+    g.add(nub);
+  }
+  const body = new CANNON.Body({ mass: 22,
+    shape: new CANNON.Cylinder(0.17, 0.2, 0.65, 8) });
+  body.position.set(x, 0.36, z);
+  body.isHydrant = true;
+  body.sprayed = false;
+  body.homeX = x; body.homeZ = z;
+  addProp(g, body);
 }
+addHydrant(51.7, -12); addHydrant(-51.7, 12);
+addHydrant(36, 51.7);  addHydrant(-36, -51.7);
+addHydrant(68.4, -36); addHydrant(-68.4, 36);
 // 鳥のむれ
 const birdFlocks = [];
 const matBird = new THREE.MeshLambertMaterial({ color: 0xd8dde2 });
 const matWing = new THREE.MeshLambertMaterial({ color: 0xb8bec6, side: THREE.DoubleSide });
-for (const [cx, cz] of [[60, 42], [-25, -60.5], [10, 60]]) {
+for (const [cx, cz] of [[60, 42], [-25, -60.5], [10, 60], [-60, -25], [25, 51.7]]) {
   const birds = [];
   for (let i = 0; i < 5; i++) {
     const g = new THREE.Group();
@@ -1032,10 +1171,11 @@ function resetProps() {
     p.body.velocity.setZero();
     p.body.angularVelocity.setZero();
     p.body.wakeUp();
+    if (p.body.isVending) { p.body.spillCount = 0; p.body.lastSpill = 0; }
+    if (p.body.isHydrant) p.body.sprayed = false;
   }
 }
-function startCountdown() {
-  state = 'count';
+function resetRace() {
   el('title').style.display = 'none';
   el('result').style.display = 'none';
   el('hud').style.display = 'block';
@@ -1045,11 +1185,20 @@ function startCountdown() {
   el('ctrlR').style.display = 'flex';
   // 初期化
   resetProps();
+  resetLamps();
+  clearCans();
+  hydrantSprays.length = 0;
+  for (const s of shakingBuildings) s.mesh.rotation.z = 0;
+  shakingBuildings.length = 0;
+  for (const d of crackDecals) d.visible = false;
+  comboCount = 0; comboTimer = 0;
+  slowMoT = 0; slowMoCool = 0;
   chassisBody.position.set(60, 1.6, 10);
   chassisBody.quaternion.set(0, 0, 0, 1);
   chassisBody.velocity.setZero();
   chassisBody.angularVelocity.setZero();
   expected = 1; lapsDone = 0; lapTimes = []; bestLap = null;
+  prevUpY = 1;
   el('lapText').textContent = 'LAP 1/3';
   el('lastLapText').textContent = 'ラップ --:--.---';
   el('bestLapText').textContent = 'ベスト ' + fmt(storedBest ? storedBest : null);
@@ -1057,6 +1206,9 @@ function startCountdown() {
   viewMode = 'chase';
   cabin.visible = true;
   chick.visible = true;
+}
+function beginCountdown() {
+  state = 'count';
   const cd = el('countdown'), num = el('countNum');
   cd.style.display = 'flex';
   let n = 3;
@@ -1077,6 +1229,78 @@ function startCountdown() {
       setTimeout(() => { cd.style.display = 'none'; }, 700);
     }
   }, 900);
+}
+
+/* ---- イントロ：ぴよのご尊顔→ぴょんと乗り込んでスタート ---- */
+let introT = 0;
+let chickHopFrom = new THREE.Vector3();
+const chickSeat = new THREE.Vector3(0, 0.95, -0.25); // キャブの定位置（ローカル）
+function startIntro() {
+  state = 'intro';
+  introT = 0;
+  el('introSkip').style.display = 'block';
+  // ぴよを一旦ワールドに出して、トラックの前に立たせる
+  scene.attach(chick);
+  chick.position.set(60, 0.32, 6.6);
+  chick.quaternion.identity(); // 正面（-z）＝カメラの方を向く
+  chick.scale.setScalar(1.6);  // 立ち姿は少し大きめに見せる
+  if (AC && soundOn) {
+    const t = AC.currentTime;
+    note(880, t + 0.2, 0.08, 'square', 0.12);
+    note(1175, t + 0.32, 0.1, 'square', 0.12);
+  }
+}
+function endIntro() {
+  el('introSkip').style.display = 'none';
+  carGroup.attach(chick);
+  chick.position.copy(chickSeat);
+  chick.quaternion.identity();
+  chick.scale.setScalar(1);
+  camPos.set(60, 7, 19.5); // 追従カメラの初期位置へ
+  beginCountdown();
+}
+function updateIntro(dt) {
+  introT += dt;
+  const t = introT;
+  if (t < 2.0) {
+    // ご尊顔タイム：トラックの前でぴょこぴょこ
+    chick.position.y = 0.32 + Math.abs(Math.sin(t * 5)) * 0.14;
+    chick.rotation.z = Math.sin(t * 5) * 0.08;
+    camera.fov += (58 - camera.fov) * Math.min(dt * 5, 1);
+    camera.updateProjectionMatrix();
+    camera.position.set(60, 0.95, 4.2);
+    camera.lookAt(60, 0.75, 6.6);
+  } else if (t < 2.8) {
+    // ぴょんと乗り込む（放物線ジャンプ）
+    if (chickHopFrom.lengthSq() === 0) {
+      chickHopFrom.copy(chick.position);
+      if (AC && soundOn) note(660, AC.currentTime, 0.12, 'square', 0.14);
+    }
+    const k = (t - 2.0) / 0.8;
+    const seatWorld = carGroup.localToWorld(chickSeat.clone());
+    chick.position.lerpVectors(chickHopFrom, seatWorld, k);
+    chick.position.y += Math.sin(k * Math.PI) * 1.4; // 放物線
+    chick.rotation.z = 0;
+    chick.scale.setScalar(1.6 - 0.6 * k);
+    camera.position.set(60, 1.6, 4.2);
+    camera.lookAt(chick.position);
+  } else if (t < 3.7) {
+    // カメラが後方追従位置へスイープ
+    const k = (t - 2.8) / 0.9;
+    const ease = k * k * (3 - 2 * k);
+    tmpV.set(60, 1.6, 4.2).lerp(new THREE.Vector3(60, 7, 19.5), ease);
+    camera.position.copy(tmpV);
+    camera.fov += (62 - camera.fov) * Math.min(dt * 4, 1);
+    camera.updateProjectionMatrix();
+    camera.lookAt(carGroup.position.x, carGroup.position.y + 1.4, carGroup.position.z);
+    // ぴよは座席に固定
+    const seatWorld = carGroup.localToWorld(chickSeat.clone());
+    chick.position.copy(seatWorld);
+    chick.scale.setScalar(1);
+  } else {
+    chickHopFrom.set(0, 0, 0);
+    endIntro();
+  }
 }
 function finishRace() {
   state = 'finish';
@@ -1102,19 +1326,26 @@ el('btnStart').addEventListener('pointerdown', (e) => {
   e.preventDefault();
   initAudio();
   if (AC && AC.state === 'suspended') AC.resume();
-  startCountdown();
+  resetRace();
+  startIntro();  // 最初だけぴよの搭乗シーン
 });
 el('btnRetry').addEventListener('pointerdown', (e) => {
   e.preventDefault();
-  startCountdown();
+  resetRace();
+  beginCountdown();  // リトライはすぐスタート
 });
 el('btnReset').addEventListener('pointerdown', (e) => { e.preventDefault(); respawn(); });
 
-/* ---- 上スワイプでひっくり返しを直す ---- */
+/* ---- 上スワイプでひっくり返しを直す / イントロのタップスキップ ---- */
 {
   let swipeY = null, swipeT = 0;
   const canvasEl = renderer.domElement;
   canvasEl.addEventListener('pointerdown', (e) => {
+    if (state === 'intro') {
+      // タップでスキップ
+      introT = 99;
+      return;
+    }
     swipeY = e.clientY;
     swipeT = performance.now();
   });
@@ -1147,34 +1378,106 @@ el('btnSound').addEventListener('pointerdown', (e) => {
    衝突イベント（火花・音・カメラゆれ）
 ============================================================ */
 let shake = 0;
+
+/* ---- コンボ（連続破壊で音が上がっていく） ---- */
+let comboCount = 0, comboTimer = 0, comboHideT = null;
+function addCombo() {
+  comboCount++;
+  comboTimer = 3;
+  if (AC && soundOn) {
+    note(300 * Math.pow(1.09, Math.min(comboCount, 14)), AC.currentTime, 0.12, 'square', 0.13);
+  }
+  if (comboCount >= 3) {
+    const m = document.getElementById('comboMsg');
+    m.textContent = comboCount + ' コンボ！';
+    m.style.display = 'block';
+    if (comboHideT) clearTimeout(comboHideT);
+    comboHideT = setTimeout(() => { m.style.display = 'none'; }, 900);
+    if ((comboCount === 5 || comboCount === 10) && AC && soundOn) {
+      const t = AC.currentTime;
+      [660, 880, 1100].forEach((f, i) => note(f, t + i * 0.07, 0.14, 'square', 0.14));
+    }
+  }
+}
+
+/* ---- スローモーション（大クラッシュ・横転の瞬間） ---- */
+let slowMoT = 0, slowMoCool = 0;
+function triggerSlowMo() {
+  if (slowMoCool > 0) return;
+  slowMoT = 0.7;
+  slowMoCool = 4;
+}
 chassisBody.addEventListener('collide', (e) => {
   const other = e.body;
   const v = Math.abs(e.contact.getImpactVelocityAlongNormal());
+  const c = e.contact;
+  const hitP = (c.bi === chassisBody)
+    ? c.bi.position.vadd(c.ri) : c.bj.position.vadd(c.rj);
+  // 車→相手方向（吹き飛ばし・倒しの向き）
+  const pushDir = new CANNON.Vec3();
+  other.position.vsub(chassisBody.position, pushDir);
+  pushDir.y = 0;
+  if (pushDir.length() < 0.05) pushDir.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+  pushDir.normalize();
+
+  if (other.isLamp && v > 2.5) {
+    // 電柱をへし折る！
+    breakLamp(other.lampRef, pushDir.x, pushDir.z, v);
+    return;
+  }
   if (other.isWallLike && v > 3) {
     sndThud(v);
     shake = Math.min(shake + v * 0.045, 0.6);
     // 接触点に火花
-    const c = e.contact;
-    const p = (c.bi === chassisBody)
-      ? c.bi.position.vadd(c.ri) : c.bj.position.vadd(c.rj);
     for (let i = 0; i < 8; i++) {
-      tmpV.set(p.x, p.y + 0.2, p.z);
+      tmpV.set(hitP.x, hitP.y + 0.2, hitP.z);
       sparkPool.spawn(tmpV,
         new THREE.Vector3((Math.random() - 0.5) * 7, 2 + Math.random() * 4, (Math.random() - 0.5) * 7),
         0.4, 0.9 + Math.random() * 0.6, 12, 0, 1);
     }
+    if (other.isBuilding && v > 5) {
+      // ビル：ヒビあと＋破片＋揺れ（倒壊はしない）
+      const ni = c.ni;
+      const outN = (c.bi === chassisBody)
+        ? new THREE.Vector3(-ni.x, -ni.y, -ni.z) : new THREE.Vector3(ni.x, ni.y, ni.z);
+      addCrack(hitP, outN);
+      shakeBuilding(other.buildingMesh);
+      for (let i = 0; i < 14; i++) {
+        tmpV.set(hitP.x, hitP.y + 0.3, hitP.z);
+        debrisPool.spawn(tmpV,
+          new THREE.Vector3(outN.x * 3 + (Math.random() - 0.5) * 5,
+            2 + Math.random() * 4.5, outN.z * 3 + (Math.random() - 0.5) * 5),
+          0.7, 0.5 + Math.random() * 0.5, 10, 0, 0.9);
+      }
+      if (AC && soundOn) noiseBurst(AC.currentTime, 0.3, 0.2, 'lowpass', 500);
+      if (v > 10) triggerSlowMo();
+    }
+  } else if (other.isVending && v > 3) {
+    // 自販機：たおしてジュースをばらまく（1台につき最大2回）
+    const now = performance.now();
+    if (other.spillCount < 2 && now - other.lastSpill > 800) {
+      other.spillCount++;
+      other.lastSpill = now;
+      spillCans(other.position, pushDir.x, pushDir.z);
+      sndCrash();
+      shake = Math.min(shake + 0.25, 0.6);
+      addCombo();
+    }
+    sndPok();
+  } else if (other.isHydrant && v > 3.5 && !other.sprayed) {
+    // 消火栓：ふっとばすと水が噴き上がる！
+    other.sprayed = true;
+    hydrantSprays.push({ x: other.homeX, z: other.homeZ, t: 4.5 });
+    if (AC && soundOn) noiseBurst(AC.currentTime, 0.5, 0.2, 'highpass', 1000);
+    sndThud(v);
+    addCombo();
   } else if (other.isProp && v > 1.5) {
     sndPok();
     if (other.isCardboard && v > 1.8) {
       // 段ボールを派手に吹き飛ばす
-      const dir = new CANNON.Vec3();
-      other.position.vsub(chassisBody.position, dir);
-      dir.y = 0;
-      if (dir.length() < 0.05) dir.set(Math.random() - 0.5, 0, Math.random() - 0.5);
-      dir.normalize();
       const power = Math.min(4.5 + v * 1.5, 17);
-      other.velocity.x += dir.x * power;
-      other.velocity.z += dir.z * power;
+      other.velocity.x += pushDir.x * power;
+      other.velocity.z += pushDir.z * power;
       other.velocity.y += 3.5 + Math.random() * 3.5;
       other.angularVelocity.set(
         (Math.random() - 0.5) * 16, (Math.random() - 0.5) * 16, (Math.random() - 0.5) * 16);
@@ -1182,9 +1485,10 @@ chassisBody.addEventListener('collide', (e) => {
       for (let i = 0; i < 12; i++) {
         tmpV.set(other.position.x, other.position.y + 0.15, other.position.z);
         dustPool.spawn(tmpV,
-          new THREE.Vector3(dir.x * 4 + (Math.random() - 0.5) * 6, 2.5 + Math.random() * 4.5, dir.z * 4 + (Math.random() - 0.5) * 6),
+          new THREE.Vector3(pushDir.x * 4 + (Math.random() - 0.5) * 6, 2.5 + Math.random() * 4.5, pushDir.z * 4 + (Math.random() - 0.5) * 6),
           0.6, 0.4 + Math.random() * 0.35, 9, 0.6, 0.8);
       }
+      addCombo();
     }
   }
 });
@@ -1200,6 +1504,7 @@ let driftCharge = 0, boostTime = 0;
 let wasDrifting = false;
 let lampCool = 0, splashCool = 0, dustCool = 0, hudCool = 0, stairsCool = 0;
 let wrongCool = 0;
+let prevUpY = 1;
 const camPos = new THREE.Vector3(60, 8, 30);
 const rayFrom = new CANNON.Vec3(), rayTo = new CANNON.Vec3();
 const rayRes = new CANNON.RaycastResult();
@@ -1213,7 +1518,15 @@ function localVelocity() {
 renderer.setAnimationLoop(() => {
   const rawDt = clock.getDelta();
   const dt = Math.min(rawDt, 1 / 30); // 120Hz対策：クランプして固定ステップに供給
-  world.step(1 / 60, dt, 4);
+  // スローモーション：大クラッシュの瞬間だけ物理をゆっくりに
+  slowMoCool -= dt;
+  if (slowMoT > 0) slowMoT -= dt;
+  const timeScale = slowMoT > 0 ? 0.35 : 1;
+  const sdt = dt * timeScale;
+  world.step(1 / 60, sdt, 4);
+  // コンボの持続時間
+  comboTimer -= dt;
+  if (comboTimer <= 0) comboCount = 0;
 
   const now = performance.now();
   const speed = chassisBody.velocity.length();
@@ -1319,16 +1632,17 @@ renderer.setAnimationLoop(() => {
     }
   }
 
-  /* ---- 街灯ニアミス火花 ---- */
+  /* ---- 電柱ニアミス火花 ---- */
   lampCool -= dt;
   if (speed > 13 && lampCool <= 0) {
-    for (const lp of lampPositions) {
-      const dx = chassisBody.position.x - lp.x, dz = chassisBody.position.z - lp.z;
+    for (const lamp of lamps) {
+      if (lamp.broken) continue;
+      const dx = chassisBody.position.x - lamp.x, dz = chassisBody.position.z - lamp.z;
       const d2 = dx * dx + dz * dz;
       if (d2 > 1.6 && d2 < 5.5) {
         lampCool = 0.5;
         for (let i = 0; i < 5; i++) {
-          tmpV.set(lp.x, 0.9 + Math.random(), lp.z);
+          tmpV.set(lamp.x, 0.9 + Math.random(), lamp.z);
           sparkPool.spawn(tmpV,
             new THREE.Vector3((Math.random() - 0.5) * 6, 2 + Math.random() * 3, (Math.random() - 0.5) * 6),
             0.35, 0.8, 12, 0, 1);
@@ -1341,7 +1655,7 @@ renderer.setAnimationLoop(() => {
   /* ---- 階段区間のガタガタ演出（当たり判定は滑らかだが音と揺れで段差感を出す） ---- */
   stairsCool -= dt;
   if (chassisBody.position.x > 13 && chassisBody.position.x < 25.5 &&
-      Math.abs(chassisBody.position.z - (-60.5)) < 4.2 && speed > 2 && stairsCool <= 0) {
+      Math.abs(chassisBody.position.z - (-60)) < 6.2 && speed > 2 && stairsCool <= 0) {
     stairsCool = Math.max(0.09, 1.1 / speed);
     shake = Math.min(shake + 0.06, 0.3);
     if (AC && soundOn) noiseBurst(AC.currentTime, 0.05, 0.05, 'lowpass', 400);
@@ -1368,8 +1682,12 @@ renderer.setAnimationLoop(() => {
     }
     // 落下・場外の保険
     if (chassisBody.position.y < -4 || Math.abs(chassisBody.position.x) > 110 || Math.abs(chassisBody.position.z) > 110) respawn();
+    // 横転の瞬間はスローモーション！
+    const upYNow = carUpY();
+    if (prevUpY > 0.5 && upYNow < 0.1) triggerSlowMo();
+    prevUpY = upYNow;
     // 横転したまま動けない → 上スワイプの案内を出す
-    if (carUpY() < 0.25 && speed < 1) { wrongCool += dt; } else wrongCool = 0;
+    if (upYNow < 0.25 && speed < 1) { wrongCool += dt; } else wrongCool = 0;
     el('wrongMsg').style.display = wrongCool > 1.0 ? 'block' : 'none';
   }
 
@@ -1407,69 +1725,48 @@ renderer.setAnimationLoop(() => {
     p.mesh.position.copy(p.body.position);
     p.mesh.quaternion.copy(p.body.quaternion);
   }
+  for (const c of cans) {
+    c.mesh.position.copy(c.body.position);
+    c.mesh.quaternion.copy(c.body.quaternion);
+  }
+  // 折れた電柱の同期＆明かりのチカチカ
+  for (const lamp of lamps) {
+    if (lamp.dynBody) {
+      lamp.g.position.copy(lamp.dynBody.position);
+      lamp.g.quaternion.copy(lamp.dynBody.quaternion);
+    }
+    if (lamp.flickerT > 0) {
+      lamp.flickerT -= dt;
+      lamp.headMat.color.setHex(
+        lamp.flickerT <= 0 || Math.sin(lamp.flickerT * 42) < 0 ? 0x333844 : 0xffe9a0);
+    }
+  }
+  // 消火栓の水噴き上げ
+  for (let i = hydrantSprays.length - 1; i >= 0; i--) {
+    const sp = hydrantSprays[i];
+    sp.t -= dt;
+    if (sp.t <= 0) { hydrantSprays.splice(i, 1); continue; }
+    for (let k = 0; k < 2; k++) {
+      tmpV.set(sp.x + (Math.random() - 0.5) * 0.3, 0.3, sp.z + (Math.random() - 0.5) * 0.3);
+      splashPool.spawn(tmpV,
+        new THREE.Vector3((Math.random() - 0.5) * 2.5, 7 + Math.random() * 3.5, (Math.random() - 0.5) * 2.5),
+        0.9, 0.55, 9, 0.4, 0.85);
+    }
+  }
+  // ビルの揺れ
+  for (let i = shakingBuildings.length - 1; i >= 0; i--) {
+    const s = shakingBuildings[i];
+    s.t -= dt;
+    if (s.t <= 0) {
+      s.mesh.rotation.z = 0;
+      shakingBuildings.splice(i, 1);
+    } else {
+      s.mesh.rotation.z = Math.sin(s.t * 45) * 0.014 * (s.t / 0.45);
+    }
+  }
 
   /* ---- NPC更新 ---- */
   const carP = carGroup.position;
-  for (const ped of peds) {
-    ped.ph += dt * 9;
-    const p = ped.g.position;
-    const dx = p.x - carP.x, dz = p.z - carP.z;
-    const d2 = dx * dx + dz * dz;
-    if (d2 < 64) ped.scared = 1.6;
-    if (d2 < 3.2 && ped.scared < 1.5) { ped.scared = 1.8; sndWah(); }
-    if (ped.scared > 0) {
-      ped.scared -= dt;
-      const d = Math.sqrt(d2) || 1;
-      p.x += (dx / d) * 4.5 * dt;
-      p.z += (dz / d) * 4.5 * dt;
-      clampToTown(p);
-      ped.g.rotation.y = Math.atan2(dx, dz);
-      p.y = 0.1 + Math.abs(Math.sin(ped.ph * 1.6)) * 0.12;
-    } else {
-      const L = ped.lane;
-      if (L.axis === 'z') {
-        p.z += ped.dir * 1.2 * dt;
-        if (p.z > L.max || p.z < L.min) ped.dir *= -1;
-        ped.g.rotation.y = ped.dir > 0 ? 0 : Math.PI;
-      } else {
-        p.x += ped.dir * 1.2 * dt;
-        if (p.x > L.max || p.x < L.min) ped.dir *= -1;
-        ped.g.rotation.y = ped.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
-      }
-      p.y = 0.1 + Math.abs(Math.sin(ped.ph)) * 0.04;
-    }
-  }
-  for (const dog of dogs) {
-    const p = dog.g.position;
-    const dx = p.x - carP.x, dz = p.z - carP.z;
-    const d2 = dx * dx + dz * dz;
-    if (d2 < 81 && dog.scared <= 0) { dog.scared = 2; sndBark(); }
-    if (dog.scared > 0) {
-      dog.scared -= dt;
-      const d = Math.sqrt(d2) || 1;
-      p.x += (dx / d) * 6 * dt;
-      p.z += (dz / d) * 6 * dt;
-      clampToTown(p);
-      dog.g.rotation.y = Math.atan2(dx, dz);
-      p.y = Math.abs(Math.sin(performance.now() * 0.02)) * 0.15;
-    } else {
-      dog.wait -= dt;
-      const to = dog.target;
-      const tx = to.x - p.x, tz = to.z - p.z;
-      const td = Math.hypot(tx, tz);
-      if (td < 0.8 || dog.wait <= 0) {
-        const side = [[60, 0], [-60, 0], [0, 60], [0, -60]][(Math.random() * 4) | 0];
-        to.set(side[0] + (Math.random() - 0.5) * 10, 0, side[1] + (Math.random() - 0.5) * 10);
-        if (side[0] === 0) to.x = (Math.random() - 0.5) * 90; else to.z = (Math.random() - 0.5) * 90;
-        dog.wait = 6 + Math.random() * 5;
-      } else {
-        p.x += (tx / td) * 2.2 * dt;
-        p.z += (tz / td) * 2.2 * dt;
-        dog.g.rotation.y = Math.atan2(tx, tz);
-        p.y = Math.abs(Math.sin(performance.now() * 0.012)) * 0.06;
-      }
-    }
-  }
   for (const flock of birdFlocks) {
     const dx = flock.cx - carP.x, dz = flock.cz - carP.z;
     const d2 = dx * dx + dz * dz;
@@ -1509,31 +1806,37 @@ renderer.setAnimationLoop(() => {
   }
 
   /* ---- パーティクル ---- */
-  dustPool.update(dt);
-  splashPool.update(dt);
-  sparkPool.update(dt);
+  dustPool.update(sdt);
+  splashPool.update(sdt);
+  sparkPool.update(sdt);
+  smokePool.update(sdt);
+  debrisPool.update(sdt);
 
   /* ---- カメラ ---- */
   shake *= Math.exp(-dt * 3.5);
-  const targetFov = (viewMode === 'chase' ? 62 : 74) + Math.min(Math.abs(fwdSpeed) * 0.35, 14) + (boostTime > 0 ? 10 : 0);
-  camera.fov += (targetFov - camera.fov) * Math.min(dt * 5, 1);
-  camera.updateProjectionMatrix();
-  if (viewMode === 'chase') {
-    const off = new THREE.Vector3(0, 6.2, 9.5).applyQuaternion(carGroup.quaternion);
-    tmpV.copy(carGroup.position).add(off);
-    camPos.lerp(tmpV, 1 - Math.exp(-dt * 4.5));
-    camera.position.copy(camPos);
-    camera.position.x += (Math.random() - 0.5) * shake;
-    camera.position.y += (Math.random() - 0.5) * shake;
-    camera.lookAt(carGroup.position.x, carGroup.position.y + 1.4, carGroup.position.z);
+  if (state === 'intro') {
+    updateIntro(dt);
   } else {
-    const off = new THREE.Vector3(0, 1.15, -0.15).applyQuaternion(carGroup.quaternion);
-    camera.position.copy(carGroup.position).add(off);
-    camera.position.y += (Math.random() - 0.5) * shake * 0.5;
-    const look = new THREE.Vector3(0, 0.85, -12).applyQuaternion(carGroup.quaternion);
-    tmpV.copy(carGroup.position).add(look);
-    camera.lookAt(tmpV);
-    camPos.copy(camera.position);
+    const targetFov = (viewMode === 'chase' ? 62 : 74) + Math.min(Math.abs(fwdSpeed) * 0.35, 14) + (boostTime > 0 ? 10 : 0);
+    camera.fov += (targetFov - camera.fov) * Math.min(dt * 5, 1);
+    camera.updateProjectionMatrix();
+    if (viewMode === 'chase') {
+      const off = new THREE.Vector3(0, 6.2, 9.5).applyQuaternion(carGroup.quaternion);
+      tmpV.copy(carGroup.position).add(off);
+      camPos.lerp(tmpV, 1 - Math.exp(-dt * 4.5));
+      camera.position.copy(camPos);
+      camera.position.x += (Math.random() - 0.5) * shake;
+      camera.position.y += (Math.random() - 0.5) * shake;
+      camera.lookAt(carGroup.position.x, carGroup.position.y + 1.4, carGroup.position.z);
+    } else {
+      const off = new THREE.Vector3(0, 1.15, -0.15).applyQuaternion(carGroup.quaternion);
+      camera.position.copy(carGroup.position).add(off);
+      camera.position.y += (Math.random() - 0.5) * shake * 0.5;
+      const look = new THREE.Vector3(0, 0.85, -12).applyQuaternion(carGroup.quaternion);
+      tmpV.copy(carGroup.position).add(look);
+      camera.lookAt(tmpV);
+      camPos.copy(camera.position);
+    }
   }
 
   /* ---- エンジン音 ---- */
