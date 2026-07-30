@@ -232,19 +232,27 @@ for (let c = -60; c <= 60; c += 10) {
 
 // 歩道（少し高い＝縁石として物理あり）
 const matWalk = new THREE.MeshLambertMaterial({ color: 0xb7bcc2 });
-function addSidewalk(sx, sz, x, z) {
+function addSidewalk(sx, sz, x, z, rotY) {
   const m = new THREE.Mesh(new THREE.BoxGeometry(sx, 0.16, sz), matWalk);
   m.position.set(x, 0.08, z);
+  if (rotY) m.rotation.y = rotY;
   scene.add(m);
   const b = new CANNON.Body({ mass: 0, material: groundMat,
     shape: new CANNON.Box(new CANNON.Vec3(sx / 2, 0.08, sz / 2)) });
   b.position.set(x, 0.08, z);
+  if (rotY) b.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), rotY);
+  b.aabbNeedsUpdate = true;
   world.addBody(b);
 }
 addSidewalk(3, 106, 51.5, 0);  addSidewalk(3, 106, -51.5, 0);
 addSidewalk(106, 3, 0, 51.5);  addSidewalk(106, 3, 0, -51.5);
 addSidewalk(3, 140, 68.5, 0);  addSidewalk(3, 140, -68.5, 0);
 addSidewalk(140, 3, 0, 68.5);  addSidewalk(140, 3, 0, -68.5);
+// 内側・外側とも4隅を斜めカットして道路の面取りに合わせる
+for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+  addSidewalk(4.2, 22, sx * 51.5, sz * 51.5, Math.PI / 4);
+  addSidewalk(4.2, 24, sx * 68.5, sz * 68.5, Math.PI / 4);
+}
 
 /* ---- 壁は撤去（コースの左右のガードレールをなくし、ビル街にも自由に行けるように） ---- */
 const wallBodies = [];
@@ -617,7 +625,7 @@ const wheelOptions = {
   dampingRelaxation: 2.3,
   dampingCompression: 4.4,
   maxSuspensionForce: 100000,
-  rollInfluence: 0.04,
+  rollInfluence: 0.028,
   axleLocal: new CANNON.Vec3(1, 0, 0),
   maxSuspensionTravel: 0.35,
   customSlidingRotationalSpeed: -30,
@@ -689,24 +697,79 @@ carGroup.add(bedFront);
 const tailgate = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.4, 0.08), matBody);
 tailgate.position.set(0, 0.6, 1.78);
 carGroup.add(tailgate);
-// ドライバーのひよこ（キャブに着席）
-const chick = new THREE.Group();
-const chickBody = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8),
-  new THREE.MeshLambertMaterial({ color: 0xffd94a }));
-chick.add(chickBody);
-const beak = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.16, 6),
-  new THREE.MeshLambertMaterial({ color: 0xe8842a }));
-beak.rotation.x = -Math.PI / 2;
-beak.position.set(0, 0.02, -0.27);
-chick.add(beak);
-for (const s of [-1, 1]) {
-  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 4),
-    new THREE.MeshBasicMaterial({ color: 0x222222 }));
-  eye.position.set(0.1 * s, 0.1, -0.21);
-  chick.add(eye);
+// ドライバーのひよこ（添付モデル。足元が原点、搭乗演出が終わったら非表示にする）
+function createChick() {
+  const group = new THREE.Group();
+  const stdMat = (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.65, metalness: 0.05 });
+
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.55, 20, 16), stdMat(0xf6c143));
+  body.position.set(0, 0.75, 0);
+  group.add(body);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.4, 20, 16), stdMat(0xf6c143));
+  head.position.set(0, 1.35, 0.08);
+  group.add(head);
+
+  const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 10), stdMat(0x1a1a1a));
+  eyeL.position.set(-0.15, 1.42, 0.42);
+  group.add(eyeL);
+  const eyeR = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 10), stdMat(0x1a1a1a));
+  eyeR.position.set(0.15, 1.42, 0.42);
+  group.add(eyeR);
+
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.2, 12), stdMat(0xf5941f));
+  beak.position.set(0, 1.32, 0.46);
+  beak.rotation.set(1.855, 0, 0);
+  group.add(beak);
+
+  const wingL = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 12), stdMat(0xf6d743));
+  wingL.position.set(-0.5009, 0.85, -0.02);
+  wingL.rotation.set(0.0015, -1.0488, 2.5957);
+  wingL.scale.set(0.6, 1, 0.35);
+  group.add(wingL);
+  const wingR = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 12), stdMat(0xf6d743));
+  wingR.position.set(0.4943, 0.85, -0.02);
+  wingR.rotation.set(0, 0.9291, -2.548);
+  wingR.scale.set(0.6, 1, 0.35);
+  group.add(wingR);
+
+  const tailTip = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10), stdMat(0xf6d743));
+  tailTip.position.set(-0.0234, 0.4687, -0.3805);
+  tailTip.rotation.set(-0.395, 0, 0);
+  tailTip.scale.set(1.4271, 0.4141, 1.7247);
+  group.add(tailTip);
+
+  const footL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.07, 0.3), stdMat(0xf58d1f));
+  footL.position.set(-0.2, 0.2466, -0.0101);
+  footL.rotation.set(0.1538, 0, 0);
+  group.add(footL);
+  const footR = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.07, 0.3), stdMat(0xf58d1f));
+  footR.position.set(0.2, 0.2519, 0.1199);
+  footR.rotation.set(-0.0892, 0.0042, -0.003);
+  group.add(footR);
+
+  const topKnot = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 10), stdMat(0xff50a0));
+  topKnot.position.set(-0.0018, 1.6976, -0.0885);
+  topKnot.rotation.set(-0.4677, -0.0089, -0.0261);
+  topKnot.scale.set(0.6296, 0.9351, 1.1887);
+  group.add(topKnot);
+
+  const cheekL = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 12), stdMat(0x73450c));
+  cheekL.position.set(-0.1751, 1.5292, 0.3926);
+  cheekL.rotation.set(-0.2561, -0.3673, 0.0369);
+  cheekL.scale.set(0.1732, 0.0414, 0.0454);
+  group.add(cheekL);
+  const cheekR = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 12), stdMat(0x73450c));
+  cheekR.position.set(0.1637, 1.5292, 0.4063);
+  cheekR.rotation.set(-0.2357, 0.3022, -0.1098);
+  cheekR.scale.set(0.1732, 0.039, 0.0454);
+  group.add(cheekR);
+
+  return group;
 }
-chick.position.set(0, 0.95, -0.25);
-carGroup.add(chick);
+const chick = createChick();
+chick.visible = false; // 通常は非表示。搭乗演出のときだけ出す
+scene.add(chick);
 // ライト
 const matHead = new THREE.MeshBasicMaterial({ color: 0xfff6cc });
 const matTail = new THREE.MeshBasicMaterial({ color: 0xd83030 });
@@ -1212,7 +1275,7 @@ function resetRace() {
   // 視点をデフォルト(斜め後ろ追従)にリセット
   viewMode = 'chase';
   cabin.visible = true;
-  chick.visible = true;
+  chick.visible = false; // 通常は非表示（搭乗演出のときだけ出す）
 }
 function beginCountdown() {
   state = 'count';
@@ -1241,16 +1304,17 @@ function beginCountdown() {
 /* ---- イントロ：ぴよのご尊顔→ぴょんと乗り込んでスタート ---- */
 let introT = 0;
 let chickHopFrom = new THREE.Vector3();
-const chickSeat = new THREE.Vector3(0, 0.95, -0.25); // キャブの定位置（ローカル）
+const chickStandPos = new THREE.Vector3(60, 0, 6.6);   // 足元基準：地面に立つ位置
+const chickSeatLocal = new THREE.Vector3(0, 0.15, -0.25); // キャブの座席（carGroupローカル・足元基準）
+const CHICK_STAND_SCALE = 0.85; // 立ち姿の大きさ
 function startIntro() {
   state = 'intro';
   introT = 0;
   el('introSkip').style.display = 'block';
-  // ぴよを一旦ワールドに出して、トラックの前に立たせる
-  scene.attach(chick);
-  chick.position.set(60, 0.32, 6.6);
-  chick.quaternion.identity(); // 正面（-z）＝カメラの方を向く
-  chick.scale.setScalar(1.6);  // 立ち姿は少し大きめに見せる
+  chick.visible = true;
+  chick.position.copy(chickStandPos);
+  chick.rotation.set(0, Math.PI, 0); // モデルは+Z向きがデフォなので180度回してカメラ側(-Z)を向かせる
+  chick.scale.setScalar(CHICK_STAND_SCALE);
   if (AC && soundOn) {
     const t = AC.currentTime;
     note(880, t + 0.2, 0.08, 'square', 0.12);
@@ -1259,10 +1323,7 @@ function startIntro() {
 }
 function endIntro() {
   el('introSkip').style.display = 'none';
-  carGroup.attach(chick);
-  chick.position.copy(chickSeat);
-  chick.quaternion.identity();
-  chick.scale.setScalar(1);
+  chick.visible = false; // 搭乗演出はここでおしまい。あとは出てこなくてOK
   camPos.set(60, 7, 19.5); // 追従カメラの初期位置へ
   beginCountdown();
 }
@@ -1271,12 +1332,12 @@ function updateIntro(dt) {
   const t = introT;
   if (t < 2.0) {
     // ご尊顔タイム：トラックの前でぴょこぴょこ
-    chick.position.y = 0.32 + Math.abs(Math.sin(t * 5)) * 0.14;
-    chick.rotation.z = Math.sin(t * 5) * 0.08;
+    chick.position.y = chickStandPos.y + Math.abs(Math.sin(t * 5)) * 0.14;
+    chick.rotation.set(0, Math.PI, Math.sin(t * 5) * 0.08);
     camera.fov += (58 - camera.fov) * Math.min(dt * 5, 1);
     camera.updateProjectionMatrix();
-    camera.position.set(60, 0.95, 4.2);
-    camera.lookAt(60, 0.75, 6.6);
+    camera.position.set(60, 1.1, 4.0);
+    camera.lookAt(60, 1.1, 6.6);
   } else if (t < 2.8) {
     // ぴょんと乗り込む（放物線ジャンプ）
     if (chickHopFrom.lengthSq() === 0) {
@@ -1284,26 +1345,25 @@ function updateIntro(dt) {
       if (AC && soundOn) note(660, AC.currentTime, 0.12, 'square', 0.14);
     }
     const k = (t - 2.0) / 0.8;
-    const seatWorld = carGroup.localToWorld(chickSeat.clone());
+    const seatWorld = carGroup.localToWorld(chickSeatLocal.clone());
     chick.position.lerpVectors(chickHopFrom, seatWorld, k);
-    chick.position.y += Math.sin(k * Math.PI) * 1.4; // 放物線
-    chick.rotation.z = 0;
-    chick.scale.setScalar(1.6 - 0.6 * k);
-    camera.position.set(60, 1.6, 4.2);
+    chick.position.y += Math.sin(k * Math.PI) * 1.3; // 放物線
+    chick.rotation.set(0, Math.PI, 0);
+    chick.scale.setScalar(CHICK_STAND_SCALE * (1 - 0.55 * k));
+    camera.position.set(60, 1.7, 4.0);
     camera.lookAt(chick.position);
-  } else if (t < 3.7) {
-    // カメラが後方追従位置へスイープ
-    const k = (t - 2.8) / 0.9;
+  } else if (t < 3.6) {
+    // カメラが後方追従位置へスイープ。ぴよはキャブでちっちゃく縮んで消える
+    const k = (t - 2.8) / 0.8;
     const ease = k * k * (3 - 2 * k);
-    tmpV.set(60, 1.6, 4.2).lerp(new THREE.Vector3(60, 7, 19.5), ease);
+    tmpV.set(60, 1.7, 4.0).lerp(new THREE.Vector3(60, 7, 19.5), ease);
     camera.position.copy(tmpV);
     camera.fov += (62 - camera.fov) * Math.min(dt * 4, 1);
     camera.updateProjectionMatrix();
     camera.lookAt(carGroup.position.x, carGroup.position.y + 1.4, carGroup.position.z);
-    // ぴよは座席に固定
-    const seatWorld = carGroup.localToWorld(chickSeat.clone());
+    const seatWorld = carGroup.localToWorld(chickSeatLocal.clone());
     chick.position.copy(seatWorld);
-    chick.scale.setScalar(1);
+    chick.scale.setScalar(Math.max(CHICK_STAND_SCALE * 0.45 * (1 - ease), 0));
   } else {
     chickHopFrom.set(0, 0, 0);
     endIntro();
@@ -1371,7 +1431,6 @@ let viewMode = 'chase'; // chase | cockpit
 function toggleView() {
   viewMode = viewMode === 'chase' ? 'cockpit' : 'chase';
   cabin.visible = viewMode === 'chase';
-  chick.visible = viewMode === 'chase';
 }
 el('btnView').addEventListener('pointerdown', (e) => { e.preventDefault(); toggleView(); });
 el('btnSound').addEventListener('pointerdown', (e) => {
@@ -1504,7 +1563,7 @@ chassisBody.addEventListener('collide', (e) => {
    メインループ
 ============================================================ */
 const clock = new THREE.Clock();
-const MAX_STEER = 0.7, MAX_FORCE = 1350, BRAKE_FORCE = 26;
+const MAX_STEER = 0.5, MAX_FORCE = 1350, BRAKE_FORCE = 26;
 let steerCur = 0;
 let airTime = 0;
 let driftCharge = 0, boostTime = 0;
@@ -1590,7 +1649,7 @@ renderer.setAnimationLoop(() => {
   const fric = inPuddle ? PUDDLE_FRICTION : BASE_FRICTION;
   // 急ハンドル×速度で後輪だけグリップを落として、転がらずドリフトで曲がれるように
   const steerMag = Math.abs(steerCur) / MAX_STEER;
-  const driftCut = inPuddle ? 0 : Math.min(steerMag * (fwdSpeed / 22), 0.42);
+  const driftCut = inPuddle ? 0 : Math.min(steerMag * (fwdSpeed / 24), 0.28);
   const rearFric = fric * (1 - driftCut);
   for (let i = 0; i < 4; i++) vehicle.wheelInfos[i].frictionSlip = (i >= 2) ? rearFric : fric;
   if (inPuddle && speed > 6 && grounded > 0) {
