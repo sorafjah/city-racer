@@ -31,6 +31,8 @@
     font-size:20px; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,.6); display:none; pointer-events:none; }
   #squashMsg { position:fixed; top:32%; left:50%; transform:translateX(-50%); z-index:6; color:#fff;
     font-size:20px; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,.6); display:none; pointer-events:none; }
+  #tubWarn { position:fixed; top:16%; left:50%; transform:translateX(-50%); z-index:6; color:#ffe24a;
+    font-size:26px; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,.7); display:none; pointer-events:none; }
 
   /* ===== top-right buttons ===== */
   #topBtns { position:fixed; top:10px; right:10px; z-index:6; display:none; gap:10px; }
@@ -94,6 +96,7 @@
 <div id="introSkip">タップでスキップ</div>
 <div id="wrongMsg">画面を上にスワイプ！ゴロンと元にもどるよ</div>
 <div id="squashMsg">タライがゴーン！画面を上にスワイプでぬけ出そう</div>
+<div id="tubWarn">うえ から なにか きた！！</div>
 
 <div id="topBtns" style="display:none;">
   <button class="sqBtn" id="btnView"><span>&#128247;</span>視点</button>
@@ -216,12 +219,17 @@ addRoad(134, 14, 0, -60);  // 北
 addRoad(134, 14, 0, 60);   // 南
 // 4隅を斜めにカットする舗装（簡易八角形コース）。継ぎ目が出ないよう専用の三角形メッシュで作る
 // Shapeは(u,v)=(x,-z)で組み、rotation.x=-90度で寝かせるとワールド(x,0,z)になる
-function addRoadCornerFill(cx, cz, sx, sz, ext) {
+function addRoadCornerFill(cx, cz, sx, sz, R) {
   const x0 = cx + sx * 7, z0 = cz + sz * 7; // 道幅14の外側の角（例: (67,67)）
   const shape = new THREE.Shape();
   shape.moveTo(x0, -z0);
-  shape.lineTo(x0 + sx * ext, -z0);
-  shape.lineTo(x0, -(z0 + sz * ext));
+  const N = 10; // 扇形を10分割してなめらかな曲線に
+  for (let i = 0; i <= N; i++) {
+    const t = (i / N) * (Math.PI / 2);
+    const x = x0 + sx * R * Math.cos(t);
+    const z = z0 + sz * R * Math.sin(t);
+    shape.lineTo(x, -z);
+  }
   shape.lineTo(x0, -z0);
   const geo = new THREE.ShapeGeometry(shape);
   const cornerMat = new THREE.MeshLambertMaterial({ color: 0x4a4d54, side: THREE.DoubleSide });
@@ -229,9 +237,32 @@ function addRoadCornerFill(cx, cz, sx, sz, ext) {
   m.rotation.x = -Math.PI / 2;
   m.position.y = 0.02;
   scene.add(m);
+  return { x0, z0, sx, sz };
+}
+// 歩道側も同じ曲線に沿わせる（参考画像のような丸みのある縁石）
+function addSidewalkCornerArc(x0, z0, sx, sz, rIn, rOut) {
+  const shape = new THREE.Shape();
+  const N = 10;
+  for (let i = 0; i <= N; i++) {
+    const t = (i / N) * (Math.PI / 2);
+    const x = x0 + sx * rOut * Math.cos(t), z = z0 + sz * rOut * Math.sin(t);
+    if (i === 0) shape.moveTo(x, -z); else shape.lineTo(x, -z);
+  }
+  for (let i = N; i >= 0; i--) {
+    const t = (i / N) * (Math.PI / 2);
+    const x = x0 + sx * rIn * Math.cos(t), z = z0 + sz * rIn * Math.sin(t);
+    shape.lineTo(x, -z);
+  }
+  shape.closePath();
+  const geo = new THREE.ShapeGeometry(shape);
+  const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0xb7bcc2, side: THREE.DoubleSide }));
+  m.rotation.x = -Math.PI / 2;
+  m.position.y = 0.08;
+  scene.add(m);
 }
 for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-  addRoadCornerFill(60 * sx, 60 * sz, sx, sz, 16);
+  const c = addRoadCornerFill(60 * sx, 60 * sz, sx, sz, 15);
+  addSidewalkCornerArc(c.x0, c.z0, sx, sz, 15, 18);
 }
 
 // 中央の破線
@@ -1284,47 +1315,69 @@ function tryFlipCar() {
 
 /* ---- ビルにぶつかりすぎるとタライが降ってくる ---- */
 let buildingHitStreak = 0, buildingHitDecay = 0, tubCool = 0;
-let tubState = 'idle'; // idle | falling
+let tubState = 'idle'; // idle | falling | landed | fading
 let tubT = 0;
-const tubStartY = 26;
+const tubStartY = 22;
+const TUB_FALL_TIME = 0.95;   // 落ちてくる時間（見えるようにゆっくりめ）
+const TUB_LAND_TIME = 1.7;    // 車の上に乗っている時間
+const TUB_FADE_TIME = 0.45;   // 消えるまでのフェード時間
 const TUB_HIT_THRESHOLD = 4;
 let squashed = false, squashDepth = 0;
 function maybeDropTub() {
   if (tubState !== 'idle' || tubCool > 0) return;
   tubState = 'falling';
   tubT = 0;
-  tubCool = 3;
+  tubCool = 3.5;
   tubGroup.visible = true;
+  tubGroup.scale.setScalar(1);
   tubGroup.position.set(chassisBody.position.x, tubStartY, chassisBody.position.z);
   tubGroup.rotation.set(0, Math.random() * 6, 0);
+  el('tubWarn').style.display = 'block';
+  triggerSlowMo(1.4); // 落ちてくる様子がしっかり見えるようにスローで
 }
 function updateTub(dt) {
   if (tubCool > 0) tubCool -= dt;
-  if (tubState !== 'falling') return;
+  if (tubState === 'idle') return;
   tubT += dt;
-  // 車の真上を追いかけつつ落下（狙って落ちてくる）
-  const targetX = chassisBody.position.x, targetZ = chassisBody.position.z;
-  const k = Math.min(tubT / 0.55, 1);
-  const y = tubStartY + (chassisBody.position.y + 0.3 - tubStartY) * (k * k);
-  tubGroup.position.set(targetX, y, targetZ);
-  tubGroup.rotation.y += dt * 5;
-  if (k >= 1) {
-    // 着地！ゴーンと鳴って、その場にめり込む
-    tubState = 'idle';
-    tubGroup.visible = false;
-    sndGong();
-    shake = Math.min(shake + 0.5, 0.7);
-    triggerSlowMo();
-    for (let i = 0; i < 16; i++) {
-      tmpV.set(chassisBody.position.x, chassisBody.position.y + 0.5, chassisBody.position.z);
-      starPool.spawn(tmpV,
-        new THREE.Vector3((Math.random() - 0.5) * 5, 2 + Math.random() * 4, (Math.random() - 0.5) * 5),
-        0.8, 0.9, 8, 0.3, 1);
+  const carTopY = chassisBody.position.y + 0.5;
+
+  if (tubState === 'falling') {
+    const targetX = chassisBody.position.x, targetZ = chassisBody.position.z;
+    const k = Math.min(tubT / TUB_FALL_TIME, 1);
+    const y = tubStartY + (carTopY - tubStartY) * (k * k);
+    tubGroup.position.set(targetX, y, targetZ);
+    tubGroup.rotation.y += dt * 4;
+    if (k >= 1) {
+      // 着地！ゴーンと鳴って、その場にめり込む
+      tubState = 'landed';
+      tubT = 0;
+      el('tubWarn').style.display = 'none';
+      sndGong();
+      shake = Math.min(shake + 0.5, 0.7);
+      for (let i = 0; i < 16; i++) {
+        tmpV.set(chassisBody.position.x, carTopY, chassisBody.position.z);
+        starPool.spawn(tmpV,
+          new THREE.Vector3((Math.random() - 0.5) * 5, 2 + Math.random() * 4, (Math.random() - 0.5) * 5),
+          0.8, 0.9, 8, 0.3, 1);
+      }
+      squashed = true;
+      chassisBody.velocity.set(0, 0, 0);
+      chassisBody.angularVelocity.set(0, 0, 0);
+      el('squashMsg').style.display = 'block';
     }
-    squashed = true;
-    chassisBody.velocity.set(0, 0, 0);
-    chassisBody.angularVelocity.set(0, 0, 0);
-    el('squashMsg').style.display = 'block';
+  } else if (tubState === 'landed') {
+    // 車の上にしっかり乗っている
+    tubGroup.position.set(chassisBody.position.x, carTopY - squashDepth * 0.3, chassisBody.position.z);
+    if (tubT > TUB_LAND_TIME) { tubState = 'fading'; tubT = 0; }
+  } else if (tubState === 'fading') {
+    // ちょっとしてからカランと消える
+    const k = Math.min(tubT / TUB_FADE_TIME, 1);
+    tubGroup.position.set(chassisBody.position.x, carTopY - squashDepth * 0.3, chassisBody.position.z);
+    tubGroup.scale.setScalar(1 - k);
+    if (k >= 1) {
+      tubState = 'idle';
+      tubGroup.visible = false;
+    }
   }
 }
 function unsquash() {
@@ -1363,9 +1416,10 @@ function resetRace() {
   shakingBuildings.length = 0;
   for (const d of crackDecals) d.visible = false;
   comboCount = 0; comboTimer = 0;
-  slowMoT = 0; slowMoCool = 0;
+  slowMoT = 0; slowMoCool = 0; hydrantSlowMoDelay = 0;
   buildingHitStreak = 0; buildingHitDecay = 0; tubCool = 0;
   tubState = 'idle'; tubGroup.visible = false;
+  el('tubWarn').style.display = 'none';
   squashed = false; squashDepth = 0;
   el('squashMsg').style.display = 'none';
   chassisBody.position.set(60, 1.6, 10);
@@ -1573,9 +1627,10 @@ function addCombo() {
 
 /* ---- スローモーション（大クラッシュ・横転の瞬間） ---- */
 let slowMoT = 0, slowMoCool = 0;
-function triggerSlowMo() {
+let hydrantSlowMoDelay = 0;
+function triggerSlowMo(duration) {
   if (slowMoCool > 0) return;
-  slowMoT = 0.7;
+  slowMoT = duration || 0.7;
   slowMoCool = 4;
 }
 chassisBody.addEventListener('collide', (e) => {
@@ -1649,14 +1704,15 @@ chassisBody.addEventListener('collide', (e) => {
     if (AC && soundOn) noiseBurst(AC.currentTime, 0.5, 0.2, 'highpass', 1000);
     sndThud(v);
     addCombo();
-    // 水柱で車を吹っ飛ばす（着地は成功してもしなくてもOK）
-    chassisBody.velocity.x += pushDir.x * (4 + Math.random() * 4);
-    chassisBody.velocity.z += pushDir.z * (4 + Math.random() * 4);
-    chassisBody.velocity.y += 8.5 + Math.random() * 4.5;
+    // 水柱で車を即座に力強く吹っ飛ばす（setで確実に反応させる。着地は成功してもしなくてもOK）
+    chassisBody.velocity.set(
+      pushDir.x * (6 + Math.random() * 5),
+      15 + Math.random() * 6,
+      pushDir.z * (6 + Math.random() * 5));
     chassisBody.angularVelocity.set(
-      (Math.random() - 0.5) * 9, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 9);
+      (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 10);
     shake = Math.min(shake + 0.4, 0.6);
-    triggerSlowMo();
+    hydrantSlowMoDelay = 0.12; // ポップの瞬間はキビキビ、少し遅れてスローに
   } else if (other.isProp && v > 1.5) {
     sndPok();
     if (other.isCardboard && v > 1.8) {
@@ -1683,7 +1739,7 @@ chassisBody.addEventListener('collide', (e) => {
    メインループ
 ============================================================ */
 const clock = new THREE.Clock();
-const MAX_STEER = 0.5, MAX_FORCE = 1350, BRAKE_FORCE = 26;
+const MAX_STEER = 0.38, MAX_FORCE = 1350, BRAKE_FORCE = 26;
 let steerCur = 0;
 let airTime = 0;
 let driftCharge = 0, boostTime = 0;
@@ -1706,6 +1762,10 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(rawDt, 1 / 30); // 120Hz対策：クランプして固定ステップに供給
   // スローモーション：大クラッシュの瞬間だけ物理をゆっくりに
   slowMoCool -= dt;
+  if (hydrantSlowMoDelay > 0) {
+    hydrantSlowMoDelay -= dt;
+    if (hydrantSlowMoDelay <= 0) triggerSlowMo();
+  }
   if (slowMoT > 0) slowMoT -= dt;
   const timeScale = slowMoT > 0 ? 0.35 : 1;
   const sdt = dt * timeScale;
@@ -2012,6 +2072,19 @@ renderer.setAnimationLoop(() => {
   shake *= Math.exp(-dt * 3.5);
   if (state === 'intro') {
     updateIntro(dt);
+  } else if (tubState === 'falling' || tubState === 'landed') {
+    // タライが落ちてくる/乗っている間は横から見える専用カメラに
+    const carP2 = carGroup.position;
+    tmpV.set(carP2.x + 11, carP2.y + 7, carP2.z + 9);
+    camera.position.lerp(tmpV, Math.min(dt * 6, 1));
+    const lookY = tubState === 'falling'
+      ? (carP2.y + tubGroup.position.y) / 2 + 1
+      : carP2.y + 1.5;
+    camera.lookAt(carP2.x, lookY, carP2.z);
+    const targetFov2 = 58;
+    camera.fov += (targetFov2 - camera.fov) * Math.min(dt * 5, 1);
+    camera.updateProjectionMatrix();
+    camPos.copy(camera.position);
   } else {
     const targetFov = (viewMode === 'chase' ? 62 : 74) + Math.min(Math.abs(fwdSpeed) * 0.35, 14) + (boostTime > 0 ? 10 : 0);
     camera.fov += (targetFov - camera.fov) * Math.min(dt * 5, 1);
