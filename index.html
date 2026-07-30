@@ -29,6 +29,8 @@
     font-size:14px; opacity:.8; display:none; pointer-events:none; }
   #wrongMsg { position:fixed; top:32%; left:50%; transform:translateX(-50%); z-index:6; color:#fff;
     font-size:20px; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,.6); display:none; pointer-events:none; }
+  #squashMsg { position:fixed; top:32%; left:50%; transform:translateX(-50%); z-index:6; color:#fff;
+    font-size:20px; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,.6); display:none; pointer-events:none; }
 
   /* ===== top-right buttons ===== */
   #topBtns { position:fixed; top:10px; right:10px; z-index:6; display:none; gap:10px; }
@@ -91,6 +93,7 @@
 <div id="comboMsg">3 コンボ！</div>
 <div id="introSkip">タップでスキップ</div>
 <div id="wrongMsg">画面を上にスワイプ！ゴロンと元にもどるよ</div>
+<div id="squashMsg">タライがゴーン！画面を上にスワイプでぬけ出そう</div>
 
 <div id="topBtns" style="display:none;">
   <button class="sqBtn" id="btnView"><span>&#128247;</span>視点</button>
@@ -211,11 +214,25 @@ addRoad(14, 134, 60, 0);   // 東
 addRoad(14, 134, -60, 0);  // 西
 addRoad(134, 14, 0, -60);  // 北
 addRoad(134, 14, 0, 60);   // 南
-// 4隅を斜めにカットする舗装（簡易八角形コース）
-addRoad(20, 32, 60, 60, Math.PI / 4);
-addRoad(20, 32, 60, -60, Math.PI / 4);
-addRoad(20, 32, -60, 60, Math.PI / 4);
-addRoad(20, 32, -60, -60, Math.PI / 4);
+// 4隅を斜めにカットする舗装（簡易八角形コース）。継ぎ目が出ないよう専用の三角形メッシュで作る
+// Shapeは(u,v)=(x,-z)で組み、rotation.x=-90度で寝かせるとワールド(x,0,z)になる
+function addRoadCornerFill(cx, cz, sx, sz, ext) {
+  const x0 = cx + sx * 7, z0 = cz + sz * 7; // 道幅14の外側の角（例: (67,67)）
+  const shape = new THREE.Shape();
+  shape.moveTo(x0, -z0);
+  shape.lineTo(x0 + sx * ext, -z0);
+  shape.lineTo(x0, -(z0 + sz * ext));
+  shape.lineTo(x0, -z0);
+  const geo = new THREE.ShapeGeometry(shape);
+  const cornerMat = new THREE.MeshLambertMaterial({ color: 0x4a4d54, side: THREE.DoubleSide });
+  const m = new THREE.Mesh(geo, cornerMat);
+  m.rotation.x = -Math.PI / 2;
+  m.position.y = 0.02;
+  scene.add(m);
+}
+for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+  addRoadCornerFill(60 * sx, 60 * sz, sx, sz, 16);
+}
 
 // 中央の破線
 const matDash = new THREE.MeshLambertMaterial({ color: 0xe8e8e8 });
@@ -248,11 +265,6 @@ addSidewalk(3, 106, 51.5, 0);  addSidewalk(3, 106, -51.5, 0);
 addSidewalk(106, 3, 0, 51.5);  addSidewalk(106, 3, 0, -51.5);
 addSidewalk(3, 140, 68.5, 0);  addSidewalk(3, 140, -68.5, 0);
 addSidewalk(140, 3, 0, 68.5);  addSidewalk(140, 3, 0, -68.5);
-// 内側・外側とも4隅を斜めカットして道路の面取りに合わせる
-for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-  addSidewalk(4.2, 22, sx * 51.5, sz * 51.5, Math.PI / 4);
-  addSidewalk(4.2, 24, sx * 68.5, sz * 68.5, Math.PI / 4);
-}
 
 /* ---- 壁は撤去（コースの左右のガードレールをなくし、ビル街にも自由に行けるように） ---- */
 const wallBodies = [];
@@ -846,6 +858,25 @@ const splashPool = new Pool(60, 0xcfe8ff, false, 0.35);
 const sparkPool = new Pool(40, 0xffd24a, true, 0.22);
 const smokePool = new Pool(30, 0x8a8f96, false, 0.6);
 const debrisPool = new Pool(36, 0x9c9186, false, 0.32);
+const starPool = new Pool(20, 0xfff2a0, true, 0.28);
+
+/* ---- ビルにぶつかりすぎるとデカいタライが降ってくる ---- */
+const tubGroup = new THREE.Group();
+{
+  const matTub = new THREE.MeshLambertMaterial({ color: 0xcfd4d8 });
+  const matTubIn = new THREE.MeshLambertMaterial({ color: 0x9aa1a8 });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.0, 0.9, 20), matTub);
+  tubGroup.add(body);
+  const inner = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 0.9, 0.4, 20), matTubIn);
+  inner.position.y = 0.3;
+  tubGroup.add(inner);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(1.3, 0.09, 8, 20), matTub);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 0.45;
+  tubGroup.add(rim);
+}
+tubGroup.visible = false;
+scene.add(tubGroup);
 const tmpV = new THREE.Vector3();
 
 /* ============================================================
@@ -956,6 +987,22 @@ function sndCrash() {
   noiseBurst(t, 0.25, 0.22, 'bandpass', 1800);
   note(180, t, 0.15, 'square', 0.14);
   note(120, t + 0.05, 0.2, 'triangle', 0.16);
+}
+function sndGong() {
+  if (!AC || !soundOn) return;
+  const t = AC.currentTime;
+  // 金属的な「ゴーン」：複数の減衰の遅いサイン波を重ねる
+  [220, 330, 440, 587].forEach((f, i) => {
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = 'sine';
+    o.frequency.value = f;
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.16 / (i + 1), t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.6 - i * 0.15);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + 1.7);
+  });
+  noiseBurst(t, 0.12, 0.2, 'lowpass', 300);
 }
 // BGMシーケンサー
 const MEL = [659, 784, 880, 784, 659, 587, 523, 587, 659, 784, 880, 988, 1047, 988, 880, 784];
@@ -1234,6 +1281,60 @@ function tryFlipCar() {
   el('wrongMsg').style.display = 'none';
   return true;
 }
+
+/* ---- ビルにぶつかりすぎるとタライが降ってくる ---- */
+let buildingHitStreak = 0, buildingHitDecay = 0, tubCool = 0;
+let tubState = 'idle'; // idle | falling
+let tubT = 0;
+const tubStartY = 26;
+const TUB_HIT_THRESHOLD = 4;
+let squashed = false, squashDepth = 0;
+function maybeDropTub() {
+  if (tubState !== 'idle' || tubCool > 0) return;
+  tubState = 'falling';
+  tubT = 0;
+  tubCool = 3;
+  tubGroup.visible = true;
+  tubGroup.position.set(chassisBody.position.x, tubStartY, chassisBody.position.z);
+  tubGroup.rotation.set(0, Math.random() * 6, 0);
+}
+function updateTub(dt) {
+  if (tubCool > 0) tubCool -= dt;
+  if (tubState !== 'falling') return;
+  tubT += dt;
+  // 車の真上を追いかけつつ落下（狙って落ちてくる）
+  const targetX = chassisBody.position.x, targetZ = chassisBody.position.z;
+  const k = Math.min(tubT / 0.55, 1);
+  const y = tubStartY + (chassisBody.position.y + 0.3 - tubStartY) * (k * k);
+  tubGroup.position.set(targetX, y, targetZ);
+  tubGroup.rotation.y += dt * 5;
+  if (k >= 1) {
+    // 着地！ゴーンと鳴って、その場にめり込む
+    tubState = 'idle';
+    tubGroup.visible = false;
+    sndGong();
+    shake = Math.min(shake + 0.5, 0.7);
+    triggerSlowMo();
+    for (let i = 0; i < 16; i++) {
+      tmpV.set(chassisBody.position.x, chassisBody.position.y + 0.5, chassisBody.position.z);
+      starPool.spawn(tmpV,
+        new THREE.Vector3((Math.random() - 0.5) * 5, 2 + Math.random() * 4, (Math.random() - 0.5) * 5),
+        0.8, 0.9, 8, 0.3, 1);
+    }
+    squashed = true;
+    chassisBody.velocity.set(0, 0, 0);
+    chassisBody.angularVelocity.set(0, 0, 0);
+    el('squashMsg').style.display = 'block';
+  }
+}
+function unsquash() {
+  if (!squashed) return false;
+  squashed = false;
+  el('squashMsg').style.display = 'none';
+  shake = Math.min(shake + 0.2, 0.5);
+  sndThud(4);
+  return true;
+}
 function resetProps() {
   for (const p of props) {
     p.body.position.copy(p.body.initPos);
@@ -1263,6 +1364,10 @@ function resetRace() {
   for (const d of crackDecals) d.visible = false;
   comboCount = 0; comboTimer = 0;
   slowMoT = 0; slowMoCool = 0;
+  buildingHitStreak = 0; buildingHitDecay = 0; tubCool = 0;
+  tubState = 'idle'; tubGroup.visible = false;
+  squashed = false; squashDepth = 0;
+  el('squashMsg').style.display = 'none';
   chassisBody.position.set(60, 1.6, 10);
   chassisBody.quaternion.set(0, 0, 0, 1);
   chassisBody.velocity.setZero();
@@ -1421,7 +1526,7 @@ el('btnReset').addEventListener('pointerdown', (e) => { e.preventDefault(); resp
     const dy = e.clientY - swipeY;
     const dtms = performance.now() - swipeT;
     swipeY = null;
-    if (dy < -60 && dtms < 800) tryFlipCar();
+    if (dy < -60 && dtms < 800) { if (!unsquash()) tryFlipCar(); }
   });
   canvasEl.addEventListener('pointercancel', () => { swipeY = null; });
 }
@@ -1517,6 +1622,13 @@ chassisBody.addEventListener('collide', (e) => {
       }
       if (AC && soundOn) noiseBurst(AC.currentTime, 0.3, 0.2, 'lowpass', 500);
       if (v > 10) triggerSlowMo();
+      // ぶつかりすぎるとタライが降ってくる
+      buildingHitStreak++;
+      buildingHitDecay = 4;
+      if (buildingHitStreak >= TUB_HIT_THRESHOLD) {
+        buildingHitStreak = 0;
+        maybeDropTub();
+      }
     }
   } else if (other.isVending && v > 3) {
     // 自販機：たおしてジュースをばらまく（1台につき最大2回）
@@ -1531,12 +1643,20 @@ chassisBody.addEventListener('collide', (e) => {
     }
     sndPok();
   } else if (other.isHydrant && v > 3.5 && !other.sprayed) {
-    // 消火栓：ふっとばすと水が噴き上がる！
+    // 消火栓：ふっとばすと水が噴き上がって、車体ごと吹っ飛ばされる！
     other.sprayed = true;
     hydrantSprays.push({ x: other.homeX, z: other.homeZ, t: 4.5 });
     if (AC && soundOn) noiseBurst(AC.currentTime, 0.5, 0.2, 'highpass', 1000);
     sndThud(v);
     addCombo();
+    // 水柱で車を吹っ飛ばす（着地は成功してもしなくてもOK）
+    chassisBody.velocity.x += pushDir.x * (4 + Math.random() * 4);
+    chassisBody.velocity.z += pushDir.z * (4 + Math.random() * 4);
+    chassisBody.velocity.y += 8.5 + Math.random() * 4.5;
+    chassisBody.angularVelocity.set(
+      (Math.random() - 0.5) * 9, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 9);
+    shake = Math.min(shake + 0.4, 0.6);
+    triggerSlowMo();
   } else if (other.isProp && v > 1.5) {
     sndPok();
     if (other.isCardboard && v > 1.8) {
@@ -1593,6 +1713,13 @@ renderer.setAnimationLoop(() => {
   // コンボの持続時間
   comboTimer -= dt;
   if (comboTimer <= 0) comboCount = 0;
+  // ビル連続ヒットの減衰
+  if (buildingHitDecay > 0) { buildingHitDecay -= dt; if (buildingHitDecay <= 0) buildingHitStreak = 0; }
+  // タライの落下アニメーション
+  updateTub(dt);
+  // めり込み深さのアニメーション
+  const squashTarget = squashed ? 0.85 : 0;
+  squashDepth += (squashTarget - squashDepth) * Math.min(dt * 6, 1);
 
   const now = performance.now();
   const speed = chassisBody.velocity.length();
@@ -1601,7 +1728,7 @@ renderer.setAnimationLoop(() => {
   const latSpeed = lv.x;
 
   /* ---- 操作 ---- */
-  const racing = state === 'race';
+  const racing = state === 'race' && !squashed;
   // スティック優先（右に倒す=+1 → 右に曲がる=負の操舵）。スティック中立時はキーボード
   const kbSteer = (input.left ? 1 : 0) - (input.right ? 1 : 0);
   const steerInput = stickSteer !== 0 ? -stickSteer : kbSteer;
@@ -1767,11 +1894,13 @@ renderer.setAnimationLoop(() => {
 
   /* ---- 車の見た目を同期 ---- */
   carGroup.position.copy(chassisBody.position);
+  carGroup.position.y -= squashDepth;
   carGroup.quaternion.copy(chassisBody.quaternion);
   for (let i = 0; i < 4; i++) {
     vehicle.updateWheelTransform(i);
     const t = vehicle.wheelInfos[i].worldTransform;
     wheelMeshes[i].position.copy(t.position);
+    wheelMeshes[i].position.y -= squashDepth;
     wheelMeshes[i].quaternion.copy(t.quaternion);
   }
   // にせ影（真下の地面をレイキャスト：始点は車体の底より下）
@@ -1877,6 +2006,7 @@ renderer.setAnimationLoop(() => {
   sparkPool.update(sdt);
   smokePool.update(sdt);
   debrisPool.update(sdt);
+  starPool.update(sdt);
 
   /* ---- カメラ ---- */
   shake *= Math.exp(-dt * 3.5);
