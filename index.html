@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>シティレーサー</title>
+<title>ピヨレーサー</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&display=swap" rel="stylesheet">
 <style>
@@ -108,7 +108,7 @@
 
 <!-- title -->
 <div class="overlay" id="title">
-  <h1>シティレーサー</h1>
+  <h1>ピヨレーサー</h1>
   <p>街の中をぐるっと 3周してゴールをめざそう！<br>
   かいだん・ジャンプ台・水たまり・でこぼこ道…<br>
   電柱をなぎたおせ！自販機をふっとばせ！<br>
@@ -200,9 +200,10 @@ ground.rotation.x = -Math.PI / 2;
 scene.add(ground);
 
 const matRoad = new THREE.MeshLambertMaterial({ color: 0x4a4d54 });
-function addRoad(w, d, x, z) {
+function addRoad(w, d, x, z, rotY) {
   const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), matRoad);
   m.rotation.x = -Math.PI / 2;
+  if (rotY) m.rotation.z = rotY; // 平面を寝かせた後のY回転はローカルZ回転に相当
   m.position.set(x, 0.02, z);
   scene.add(m);
 }
@@ -210,6 +211,11 @@ addRoad(14, 134, 60, 0);   // 東
 addRoad(14, 134, -60, 0);  // 西
 addRoad(134, 14, 0, -60);  // 北
 addRoad(134, 14, 0, 60);   // 南
+// 4隅を斜めにカットする舗装（簡易八角形コース）
+addRoad(20, 32, 60, 60, Math.PI / 4);
+addRoad(20, 32, 60, -60, Math.PI / 4);
+addRoad(20, 32, -60, 60, Math.PI / 4);
+addRoad(20, 32, -60, -60, Math.PI / 4);
 
 // 中央の破線
 const matDash = new THREE.MeshLambertMaterial({ color: 0xe8e8e8 });
@@ -335,6 +341,7 @@ function shakeBuilding(mesh) {
 for (let x = -40; x <= 40; x += 16) {
   for (let z = -40; z <= 40; z += 16) {
     if (Math.abs(x) < 20 && Math.abs(z) < 20) continue; // 中央は広場
+    if (Math.abs(x) === 40 && Math.abs(z) === 40) continue; // 四隅はコーナーの曲がりしろとして空ける
     addBuilding(x + (Math.random() * 4 - 2), z + (Math.random() * 4 - 2),
       8 + Math.random() * 4, 6 + Math.random() * 16, 8 + Math.random() * 4);
   }
