@@ -221,16 +221,12 @@ addRoad(134, 14, 0, 60);   // 南
 // Shapeは(u,v)=(x,-z)で組み、rotation.x=-90度で寝かせるとワールド(x,0,z)になる
 function addRoadCornerFill(cx, cz, sx, sz, R) {
   const x0 = cx + sx * 7, z0 = cz + sz * 7; // 道幅14の外側の角（例: (67,67)）
+  // 45度の直線カット（簡易八角形）：角から両辺にRだけ伸ばして斜めに結ぶ
   const shape = new THREE.Shape();
   shape.moveTo(x0, -z0);
-  const N = 10; // 扇形を10分割してなめらかな曲線に
-  for (let i = 0; i <= N; i++) {
-    const t = (i / N) * (Math.PI / 2);
-    const x = x0 + sx * R * Math.cos(t);
-    const z = z0 + sz * R * Math.sin(t);
-    shape.lineTo(x, -z);
-  }
-  shape.lineTo(x0, -z0);
+  shape.lineTo(x0 + sx * R, -z0);
+  shape.lineTo(x0, -(z0 + sz * R));
+  shape.closePath();
   const geo = new THREE.ShapeGeometry(shape);
   const cornerMat = new THREE.MeshLambertMaterial({ color: 0x4a4d54, side: THREE.DoubleSide });
   const m = new THREE.Mesh(geo, cornerMat);
@@ -239,20 +235,15 @@ function addRoadCornerFill(cx, cz, sx, sz, R) {
   scene.add(m);
   return { x0, z0, sx, sz };
 }
-// 歩道側も同じ曲線に沿わせる（参考画像のような丸みのある縁石）
+// 歩道側も同じ斜めラインに沿わせる（斜めの縁石帯）
 function addSidewalkCornerArc(x0, z0, sx, sz, rIn, rOut) {
   const shape = new THREE.Shape();
-  const N = 10;
-  for (let i = 0; i <= N; i++) {
-    const t = (i / N) * (Math.PI / 2);
-    const x = x0 + sx * rOut * Math.cos(t), z = z0 + sz * rOut * Math.sin(t);
-    if (i === 0) shape.moveTo(x, -z); else shape.lineTo(x, -z);
-  }
-  for (let i = N; i >= 0; i--) {
-    const t = (i / N) * (Math.PI / 2);
-    const x = x0 + sx * rIn * Math.cos(t), z = z0 + sz * rIn * Math.sin(t);
-    shape.lineTo(x, -z);
-  }
+  // 外側の斜め線
+  shape.moveTo(x0 + sx * rOut, -z0);
+  shape.lineTo(x0, -(z0 + sz * rOut));
+  // 内側の斜め線を逆向きにたどって帯にする
+  shape.lineTo(x0, -(z0 + sz * rIn));
+  shape.lineTo(x0 + sx * rIn, -z0);
   shape.closePath();
   const geo = new THREE.ShapeGeometry(shape);
   const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0xb7bcc2, side: THREE.DoubleSide }));
@@ -885,7 +876,7 @@ class Pool {
   }
 }
 const dustPool = new Pool(40, 0xbdb29a, false, 0.5);
-const splashPool = new Pool(60, 0xcfe8ff, false, 0.35);
+const splashPool = new Pool(200, 0xcfe8ff, false, 0.4);
 const sparkPool = new Pool(40, 0xffd24a, true, 0.22);
 const smokePool = new Pool(30, 0x8a8f96, false, 0.6);
 const debrisPool = new Pool(36, 0x9c9186, false, 0.32);
@@ -1836,9 +1827,18 @@ renderer.setAnimationLoop(() => {
   const fric = inPuddle ? PUDDLE_FRICTION : BASE_FRICTION;
   // 急ハンドル×速度で後輪だけグリップを落として、転がらずドリフトで曲がれるように
   const steerMag = Math.abs(steerCur) / MAX_STEER;
-  const driftCut = inPuddle ? 0 : Math.min(steerMag * (fwdSpeed / 24), 0.28);
+  let driftCut = inPuddle ? 0 : Math.min(steerMag * (fwdSpeed / 24), 0.28);
+  // カウンターステア（回っている向きと逆にハンドルを切る）ならグリップを戻して立て直せるように
+  const yawRate = chassisBody.angularVelocity.y;
+  const countering = Math.abs(yawRate) > 0.5 && Math.abs(steerCur) > 0.05
+    && Math.sign(steerCur) !== Math.sign(yawRate);
+  if (countering) driftCut *= 0.1;
   const rearFric = fric * (1 - driftCut);
   for (let i = 0; i < 4; i++) vehicle.wheelInfos[i].frictionSlip = (i >= 2) ? rearFric : fric;
+  // スピンしすぎを抑える（グルグル回りっぱなしにならないようにヨー回転を少し減衰）
+  if (racing && grounded > 0) {
+    chassisBody.angularVelocity.y *= (1 - 1.2 * dt);
+  }
   if (inPuddle && speed > 6 && grounded > 0) {
     splashCool -= dt;
     if (splashCool <= 0) {
@@ -1996,16 +1996,16 @@ renderer.setAnimationLoop(() => {
         lamp.flickerT <= 0 || Math.sin(lamp.flickerT * 42) < 0 ? 0x333844 : 0xffe9a0);
     }
   }
-  // 消火栓の水噴き上げ
+  // 消火栓の水噴き上げ（高々と噴き上がる水柱）
   for (let i = hydrantSprays.length - 1; i >= 0; i--) {
     const sp = hydrantSprays[i];
     sp.t -= dt;
     if (sp.t <= 0) { hydrantSprays.splice(i, 1); continue; }
-    for (let k = 0; k < 2; k++) {
-      tmpV.set(sp.x + (Math.random() - 0.5) * 0.3, 0.3, sp.z + (Math.random() - 0.5) * 0.3);
+    for (let k = 0; k < 5; k++) {
+      tmpV.set(sp.x + (Math.random() - 0.5) * 0.5, 0.3, sp.z + (Math.random() - 0.5) * 0.5);
       splashPool.spawn(tmpV,
-        new THREE.Vector3((Math.random() - 0.5) * 2.5, 7 + Math.random() * 3.5, (Math.random() - 0.5) * 2.5),
-        0.9, 0.55, 9, 0.4, 0.85);
+        new THREE.Vector3((Math.random() - 0.5) * 3.5, 17 + Math.random() * 7, (Math.random() - 0.5) * 3.5),
+        1.7, 0.75, 9, 0.5, 0.9);
     }
   }
   // ビルの揺れ
